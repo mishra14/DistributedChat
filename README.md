@@ -1,2 +1,2 @@
-# CIS505-Project3
+# CIS-505-Project-3
 Private repository for CIS 505 Project 3
