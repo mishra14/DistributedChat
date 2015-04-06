@@ -1,22 +1,10 @@
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <pthread.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <linux/sockios.h>
-#include <math.h>
+#include "base.h"
 
-int defaultPORT=8672;
-int socketFD,n;
-int chatSocketFD, heartBeatSocketFD, electionSocketFD, sequencerSocketFD;
-struct sockaddr_in joinClientAddress, clientAddress, selfAddress;
-char msg[1000];
-char response[1000];
+void leaderElection()
+{
+	
+}
+
 
 void identify()
 {
@@ -33,7 +21,7 @@ void identify()
 
 void *userThread(void *data)
 {
-	printf("Starting User Thread\n");
+	//printf("Starting User Thread\n");
 	while(fgets(msg,1000,stdin)!=NULL)
 	{
 		sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
@@ -42,7 +30,7 @@ void *userThread(void *data)
 
 void *networkThread(void *data)
 {
-	printf("Starting Network Thread\n");
+	//printf("Starting Network Thread\n");
 	while(1)
 	{
 		socklen_t len=sizeof(clientAddress);
@@ -77,6 +65,7 @@ int main(int argc, char **argv)
 			printf("Error in getting self socket\n");
 			exit(1);
 		}
+		//craete self data structure
 		bzero(&selfAddress,sizeof(selfAddress));
 		selfAddress.sin_family=AF_INET;
 		selfAddress.sin_addr.s_addr=htonl(INADDR_ANY);
@@ -99,11 +88,19 @@ int main(int argc, char **argv)
 				char *end=strstr((start+10)," ");
 				strncpy(ipString,(start+10),abs(end-(start+10)));
 				ipString[end-(start+10)]='\0';
-				printf("%s\n",ipString);
+				//printf("%s\n",ipString);
 			}
 		}
-
 		pclose(fp);
+		if(inet_pton(AF_INET,ipString, &(selfAddress.sin_addr))<=0)
+		{
+			printf("Error in inet_pton\n");
+			exit(1);
+		}
+		string selfIPString(ipString);
+		struct participant *self=createParticipant(selfAddress,0, string(argv[1]));
+		participantList.insert(make_pair(selfIPString,self));
+		printParticipantList();
 		printf("%s started a new chat, listening on %s:%d\nSuccedded, current users : \nTODO - print user list\n",argv[1],ipString,defaultPORT);
 	}
 	else			//join a chat
