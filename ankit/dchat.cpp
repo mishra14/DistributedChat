@@ -12,8 +12,43 @@ void identify()
 	{
 		case 'N':
 			printf("Notification\n");
-			strcpy(msg,"N0A");
-			sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+			if(response[0]=='N' && response[1]=='0' && response[2]=='_')			//respond to a join request
+			{
+				char *start,*end;
+				start=strstr(response,":");
+				if(start!=NULL)
+				{
+					end=strstr(start,":");
+				}
+				//add requester to participant list
+				string newJoineeKey(createKey(clientAddress));
+				struct participant *newJoinee=createParticipant(clientAddress,0, start+1);
+				participantList.insert(make_pair(newJoineeKey,newJoinee));
+				participantListIterator = participantList.find(newJoineeKey);
+				if(participantListIterator==participantList.end())
+				{
+					cout<<"participant not inserted\n";
+					strcpy(msg,"N0N");
+					sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+				}
+				else
+				{
+					//send an ACK
+					snprintf(msg,1000,"N0A:%d",participantList.size());
+					sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+					for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+					{
+						strcpy(msg,serializeParticipant((participantListIterator->second)));
+						msg[strlen(serializeParticipant((participantListIterator->second)))]='\0';
+						//cout<<msg<<endl;
+						sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+					}
+					
+				}
+				//send back the participant list
+				printParticipantList();
+			}
+
 		break;
 	}
 }
@@ -65,19 +100,19 @@ int main(int argc, char **argv)
 			printf("Error in getting self socket\n");
 			exit(1);
 		}
-		//craete self data structure
+		//create self data structure
 		bzero(&selfAddress,sizeof(selfAddress));
 		selfAddress.sin_family=AF_INET;
 		selfAddress.sin_addr.s_addr=htonl(INADDR_ANY);
 		selfAddress.sin_port=htons(defaultPORT);
-		if(bind(chatSocketFD,(struct sockaddr *)&selfAddress,sizeof(selfAddress))<0)
+		while((bind(chatSocketFD,(struct sockaddr *)&selfAddress,sizeof(selfAddress))<0))
 		{
-			printf("Error in self bind\n");
-			exit(1);
+			printf("Error in join client bind\nRetrying...\n");
+			selfAddress.sin_port=htons(++defaultPORT);
 		}		
 		FILE *fp;
 		char returnData[64];
-		char ipString[17];
+		char ipString[INET_ADDRSTRLEN];
 		fp = popen("/sbin/ifconfig em1", "r");
 
 		while (fgets(returnData, 64, fp) != NULL)
@@ -97,11 +132,11 @@ int main(int argc, char **argv)
 			printf("Error in inet_pton\n");
 			exit(1);
 		}
-		string selfIPString(ipString);
+		string selfKey(createKey(selfAddress));
 		struct participant *self=createParticipant(selfAddress,0, string(argv[1]));
-		participantList.insert(make_pair(selfIPString,self));
+		participantList.insert(make_pair(selfKey,self));
+		printf("%s started a new chat, listening on %s:%d\nSuccedded, current users : \nParticipant List - \n",argv[1],ipString,defaultPORT);
 		printParticipantList();
-		printf("%s started a new chat, listening on %s:%d\nSuccedded, current users : \nTODO - print user list\n",argv[1],ipString,defaultPORT);
 	}
 	else			//join a chat
 	{
@@ -120,7 +155,7 @@ int main(int argc, char **argv)
 			strncpy(port,tok+1,strlen(argv[2])-(tok-argv[2]));
 			port[strlen(argv[2])-(tok-argv[2])]='\0';
 		}
-		printf("%s\n%s\n",ip,port);
+		//printf("%s\n%s\n",ip,port);
 		chatSocketFD=socket(AF_INET, SOCK_DGRAM,0);
 		if(chatSocketFD<0)
 		{
@@ -137,13 +172,13 @@ int main(int argc, char **argv)
 		selfAddress.sin_addr.s_addr=htonl(INADDR_ANY);
 		selfAddress.sin_port=htons(defaultPORT);
 		
-		do
+		while((bind(chatSocketFD,(struct sockaddr *)&selfAddress,sizeof(selfAddress))<0))
 		{
 			printf("Error in join client bind\nRetrying...\n");
 			selfAddress.sin_port=htons(++defaultPORT);
-		}while((bind(chatSocketFD,(struct sockaddr *)&selfAddress,sizeof(selfAddress))<0));
+		}
 		
-		strcpy(msg,"N0_");
+		snprintf(msg,1000,"N0_:%s",argv[1]);
 		if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&joinClientAddress,sizeof(joinClientAddress))<0)
 		{
 			printf("error in sending join request\n");
@@ -162,13 +197,83 @@ int main(int argc, char **argv)
 		}
 		else if(response[0]=='N' && response[1]=='0' && response[2]=='A')
 		{
-			printf("Join request Accepted\n");
+			//printf("Join request Accepted\n");
+			int participantCount=atoi(&response[4]);
+			if(participantCount<2)				//2 as the list should have  host+new joinee at the least
+			{
+				cout<<"Join Request Error : participant List\n";
+				exit(1);
+			}
+			else
+			{
+				for(int i=0;i<participantCount;i++)
+				{
+					n=recvfrom(chatSocketFD,response,1000,0,NULL,NULL);
+					if(n<0)
+					{
+						cout<<"Error in receiving participant\n";
+						break;
+					}
+					response[n]=0;
+					//cout<<response<<endl;
+					char *second, *third, *fourth;					//pointers to the data within the message
+					second=strstr(response,":");
+					if(second!=NULL)
+					{
+						third=strstr(second+1,":");
+						if(third==NULL)
+						{
+							cout<<"Error in receiving participant\n";
+							break;
+						}
+						fourth=strstr(third+1,":");
+						if(fourth==NULL)
+						{
+							cout<<"Error in receiving participant\n";
+							break;
+						}
+						char *ip=new char[INET_ADDRSTRLEN];
+						char *port=new char[6];
+						char *seq=new char[10];
+						strncpy(ip,response,(second-response));
+						ip[INET_ADDRSTRLEN-1]='\0';
+						strncpy(port,second+1,(third-second-1));
+						port[(third-second-1)]='\0';
+						strncpy(seq,third+1,(fourth-third-1));
+						seq[(fourth-third-1)]='\0';
+						//cout<<"Participant - \n"<<ip<<"\n"<<port<<"\n"<<seq<<"\n"<<fourth+1<<endl;
+						if((atoi(port)<1024)||(atoi(port)>999999999))
+						{
+							cout<<"Error in receiving participant\n";
+							break;
+						}
+						struct sockaddr_in participantAddress;
+						bzero(&participantAddress,sizeof(participantAddress));
+						participantAddress.sin_family=AF_INET;
+						participantAddress.sin_addr.s_addr=inet_addr(ip);
+						participantAddress.sin_port=htons(atoi(port));
+						string clientKey(createKey(participantAddress));
+						struct participant *participant=createParticipant(participantAddress,0, fourth+1);
+						participantList.insert(make_pair(clientKey,participant));
+						
+					}
+					else
+					{
+						cout<<"Error in receiving participant\n";
+						break;
+					}
+					
+				}
+			}
 		}
 		else
 		{
 			printf("Join request Error\n");
 			exit(1);
 		}
+		
+		
+		
 		FILE *fp;
 		char returnData[64];
 		char ipString[16];
@@ -182,12 +287,13 @@ int main(int argc, char **argv)
 				char *end=strstr((start+10)," ");
 				strncpy(ipString,(start+10),abs(end-(start+10)));
 				ipString[end-(start+10)]='\0';
-				printf("%s\n",ipString);
+				//printf("%s\n",ipString);
 			}
 		}
 
 		pclose(fp);
-		printf("%s joined a new chat on %s, listening on %s:%d\nSuccedded, current users : \nTODO - print user list\n",argv[2],argv[1],ipString,defaultPORT);
+		printf("%s joined a new chat on %s, listening on %s:%d\nSuccedded, current users : \nParticipant List - \n",argv[1],argv[2],ipString,defaultPORT);
+		printParticipantList();
 	}
 	
 	

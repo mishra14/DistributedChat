@@ -16,6 +16,8 @@
 #include <map>
 #include <string>
 #include <iostream>
+#include <stdlib.h>
+
 using namespace std;
 
 int defaultPORT=8672;
@@ -25,24 +27,24 @@ struct sockaddr_in joinClientAddress, clientAddress, selfAddress;
 char msg[1000];
 char response[1000];
 
-struct participant
+struct participant									//holds the data for one participant
 {
 	struct sockaddr_in address;
 	int seqNumber;
 	string username;
 };
 
-std::map <string, struct participant * > participantList;
-
-
-bool compareParticipants()
+std::map <string, struct participant * > participantList;					//map of key - IP:PORT value - participant struct
+std::map <string, struct participant * >::iterator participantListIterator; 	//iterator for the participant list
+	
+bool compareParticipants()					//TODO - fill this comparison function for the map
 {
 	bool result=false;
 	
 	return result;
 }
 
-struct participant * createParticipant(struct sockaddr_in address, int seqNumber, string name)
+struct participant * createParticipant(struct sockaddr_in address, int seqNumber, string name)		//create a participant based on raw data
 {
 	struct participant * participant = new struct participant;
 	participant->address=address;
@@ -52,7 +54,7 @@ struct participant * createParticipant(struct sockaddr_in address, int seqNumber
 }
 
 
-in_port_t getPort(struct sockaddr *address)
+in_port_t getPort(struct sockaddr *address)					//get port number in raw format
 {
 	if (address->sa_family == AF_INET) 
 	{
@@ -61,13 +63,13 @@ in_port_t getPort(struct sockaddr *address)
     return (((struct sockaddr_in6*)address)->sin6_port);
 }
 
-int getPort(struct participant *participant)
+int getPort(struct participant *participant)				//get port number in integer format
 {
 	int port=ntohs(getPort((struct sockaddr*)&participant->address));
 	return port;
 }
 
-char * getIP(struct participant *participant)
+char * getIP(struct participant *participant)				//get IP from participant
 {
 	char *ip=new char[INET_ADDRSTRLEN];
 	
@@ -77,16 +79,40 @@ char * getIP(struct participant *participant)
 	}
 	return ip;
 }
+
+char * getIP(struct sockaddr_in address)				//get IP from address data structure
+{
+	char *ip=new char[INET_ADDRSTRLEN];
+	
+	if(inet_ntop(AF_INET,&(address.sin_addr),ip, INET_ADDRSTRLEN)==NULL)
+	{
+		cout<<"Error in inet_ntop\n";
+	}
+	return ip;
+}
+
+char *createKey(struct sockaddr_in address)
+{
+	char *ip=new char[INET_ADDRSTRLEN];
+	if(inet_ntop(AF_INET,&(address.sin_addr),ip, INET_ADDRSTRLEN)==NULL)
+	{
+		cout<<"Error in inet_ntop\n";
+	}
+	char *key=new char[INET_ADDRSTRLEN+6];
+	snprintf(key,INET_ADDRSTRLEN+6,"%s:%d",ip,ntohs(getPort((struct sockaddr*)&address)));
+	return key;
+}
 void printParticipant(struct participant *participant)
 {
 	
 	//cout<<"-------------------------------\n";
-	cout<<participant->username<<endl<<getIP(participant)<<":"<<getPort(participant)<<endl;
+	char *seq=new char[10];
+	snprintf(seq,10,"%d",participant->seqNumber);
+	cout<<participant->username<<endl<<getIP(participant)<<":"<<getPort(participant)<<endl<<seq;
 	//cout<<"-------------------------------\n";
 }
 void printParticipantList()
 {
-	std::map <string, struct participant * >::iterator participantListIterator;
 	cout<<"-------------------------------\n";
 	for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 	{
@@ -97,5 +123,18 @@ void printParticipantList()
 	cout<<"-------------------------------\n";
 }
 
+char * serializeParticipant(struct participant *participant)
+{
+	char *result=new char[1000];
+	char *seq=new char[10];
+	snprintf(seq,10,"%d",participant->seqNumber);
+	strcat(result,createKey(participant->address));
+	strcat(result,":");
+	strcat(result, seq);
+	strcat(result,":");
+	strcat(result,(participant->username).c_str());
+	//cout<<result<<endl;
+	return result;
+}
 
 #endif
