@@ -8,21 +8,14 @@ void leaderElection()
 
 void identify()
 {
-	switch(response[0])
+	switch(responseTag[0])
 	{
 		case 'N':
-			printf("Notification\n");
-			if(response[0]=='N' && response[1]=='0' && response[2]=='_')			//respond to a join request
+			if(responseTag[0]=='N' && responseTag[1]=='0' && responseTag[2]=='_')			//respond to a join request
 			{
-				char *start,*end;
-				start=strstr(response,":");
-				if(start!=NULL)
-				{
-					end=strstr(start,":");
-				}
 				//add requester to participant list
 				string newJoineeKey(createKey(clientAddress));
-				struct participant *newJoinee=createParticipant(clientAddress,0, start+1);
+				struct participant *newJoinee=createParticipant(clientAddress,0, responseMsg);
 				participantList.insert(make_pair(newJoineeKey,newJoinee));
 				participantListIterator = participantList.find(newJoineeKey);
 				if(participantListIterator==participantList.end())
@@ -33,9 +26,10 @@ void identify()
 				}
 				else
 				{
-					//send an ACK
+					//send an ACK with expectant paricipant list size
 					snprintf(msg,1000,"N0A:%d",participantList.size());
 					sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+					//send back the participant list
 					for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 					{
 						strcpy(msg,serializeParticipant((participantListIterator->second)));
@@ -43,12 +37,15 @@ void identify()
 						//cout<<msg<<endl;
 						sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
 					}
-					
+					//print updated list
+					printParticipantList();
 				}
-				//send back the participant list
-				printParticipantList();
 			}
 
+		break;
+		case 'C':
+			participantListIterator=participantList.find(createKey(clientAddress));
+			cout<<participantListIterator->second->username<<":"<<responseMsg;
 		break;
 	}
 }
@@ -59,7 +56,9 @@ void *userThread(void *data)
 	//printf("Starting User Thread\n");
 	while(fgets(msg,1000,stdin)!=NULL)
 	{
-		sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+		//TODO get sequence number first
+		multicast();
+		//sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
 	}
 }
 
@@ -77,8 +76,15 @@ void *networkThread(void *data)
 		else
 		{
 			response[n]=0;
-			printf("Received : %s\n",response);
-			identify();
+			//cout<<response<<endl;
+			if(breakDownMsg()==0)
+			{
+				identify();
+			}
+			else
+			{
+				//request retransmission
+			}
 		}
 	}
 }
@@ -178,7 +184,7 @@ int main(int argc, char **argv)
 			selfAddress.sin_port=htons(++defaultPORT);
 		}
 		
-		snprintf(msg,1000,"N0_:%s",argv[1]);
+		snprintf(msg,1000,"N0_:0:0:%s",argv[1]);
 		if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&joinClientAddress,sizeof(joinClientAddress))<0)
 		{
 			printf("error in sending join request\n");
@@ -255,7 +261,6 @@ int main(int argc, char **argv)
 						string clientKey(createKey(participantAddress));
 						struct participant *participant=createParticipant(participantAddress,0, fourth+1);
 						participantList.insert(make_pair(clientKey,participant));
-						
 					}
 					else
 					{

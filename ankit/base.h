@@ -25,8 +25,12 @@ int socketFD,n;
 int chatSocketFD, heartBeatSocketFD, electionSocketFD, sequencerSocketFD;
 struct sockaddr_in joinClientAddress, clientAddress, selfAddress;
 char msg[1000];
+char chatMsg[1000];
 char response[1000];
-
+char responseTag[4];
+char responseGlobalSeq[10];
+char responseLocalSeq[10];
+char responseMsg[1000];
 struct participant									//holds the data for one participant
 {
 	struct sockaddr_in address;
@@ -135,6 +139,50 @@ char * serializeParticipant(struct participant *participant)
 	strcat(result,(participant->username).c_str());
 	//cout<<result<<endl;
 	return result;
+}
+
+int multicast()
+{
+	chatMsg[0]='\0';
+	strcat(chatMsg,"C0_:0:0:");
+	strcat(chatMsg,msg);
+	int result=1;
+	for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+	{
+		result*=sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+	}
+}
+
+int breakDownMsg()
+{
+	char *second, *third, *fourth;					//pointers to the data within the message
+	second=strstr(response,":");
+	if(second==NULL)
+	{
+		cout<<"Error in msg break down - No Tag\n";
+		return 1;
+	}
+	third=strstr(second+1,":");
+	if(third==NULL)
+	{
+		cout<<"Error in msg break down - No Global seq\n";
+		return 1;
+	}
+	fourth=strstr(third+1,":");
+	if(fourth==NULL)
+	{
+		cout<<"Error in msg break down - No Local Seq\n";
+		return 1;
+	}
+	strncpy(responseTag,response,(second-response));
+	responseTag[(second-response)]='\0';
+	strncpy(responseGlobalSeq,second+1,(third-second-1));
+	responseGlobalSeq[(third-second-1)]='\0';
+	strncpy(responseLocalSeq,third+1,(fourth-third-1));
+	responseLocalSeq[(fourth-third-1)]='\0';
+	strcpy(responseMsg,fourth+1);
+	//cout<<"BreakDown - \n"<<responseTag<<"\n"<<responseGlobalSeq<<"\n"<<responseLocalSeq<<"\n"<<responseMsg<<endl;
+	return 0;
 }
 
 #endif
