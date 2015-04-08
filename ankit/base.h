@@ -17,20 +17,27 @@
 #include <string>
 #include <iostream>
 #include <stdlib.h>
+#include <time.h>
+#define CHAT 1
+#define HEARTBEAT 2
 
 using namespace std;
 
 int defaultPORT=8672;
-int socketFD,n;
 int chatSocketFD, heartBeatSocketFD, electionSocketFD, sequencerSocketFD;
 struct sockaddr_in joinClientAddress, clientAddress, selfAddress;
 char msg[1000];
+char heartBeatMsg[1000];
 char chatMsg[1000];
 char response[1000];
 char responseTag[4];
 char responseGlobalSeq[10];
 char responseLocalSeq[10];
 char responseMsg[1000];
+bool isLeader = false, updatingParticipantList = false, isLeaderAlive=true;
+pthread_t userThreadID,networkThreadID, heartBeatThreadID;
+
+
 struct participant									//holds the data for one participant
 {
 	struct sockaddr_in address;
@@ -38,9 +45,12 @@ struct participant									//holds the data for one participant
 	string username;
 };
 
+std::map <string, bool> heartBeatMap;										//map of key - IP:PORT and value - bool to keep track of which clients are alive
+std::map <string, bool>::iterator heartBeatMapIterator;						//iterator for heartBeatMap
 std::map <string, struct participant * > participantList;					//map of key - IP:PORT value - participant struct
 std::map <string, struct participant * >::iterator participantListIterator; 	//iterator for the participant list
-	
+struct participant *leader, *self;	
+
 bool compareParticipants()					//TODO - fill this comparison function for the map
 {
 	bool result=false;
@@ -137,20 +147,41 @@ char * serializeParticipant(struct participant *participant)
 	strcat(result, seq);
 	strcat(result,":");
 	strcat(result,(participant->username).c_str());
+	if(participant==leader)
+	{
+		strcat(result,":");
+		strcat(result,"leader");
+	}
 	//cout<<result<<endl;
 	return result;
 }
 
-int multicast()
+int multicast(int type)
 {
-	chatMsg[0]='\0';
-	strcat(chatMsg,"C0_:0:0:");
-	strcat(chatMsg,msg);
 	int result=1;
-	for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+	if(type==CHAT)					//chat type message
 	{
-		result*=sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+		chatMsg[0]='\0';
+		strcat(chatMsg,"C0_:0:0:");
+		strcat(chatMsg,msg);
+		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+		{
+			result*=sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+		}
 	}
+	else if(type==HEARTBEAT)			//heartbeat type message
+	{
+		heartBeatMsg[0]='\0';
+		strcat(heartBeatMsg,"H0_:0:0:-");
+		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+		{
+			if(participantListIterator->second!=leader)
+			{
+				result*=sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+			}
+		}
+	}
+	return result;
 }
 
 int breakDownMsg()
