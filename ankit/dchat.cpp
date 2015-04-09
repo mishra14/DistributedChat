@@ -2,7 +2,12 @@
 
 void leaderElection()
 {
-	
+	cout<<"Election\n";
+	participantListIterator=participantList.find(createKey(self->address));
+	for(; participantListIterator!=participantList.end();participantListIterator++)
+	{
+		printParticipant(participantListIterator->second);
+	}
 }
 
 
@@ -44,10 +49,25 @@ void identify()
 					}
 					//print updated list
 					printParticipantList();
-					updatingParticipantList=false;
+					
 				}
+				updatingParticipantList=false;
 			}
-
+			else if(responseTag[0]=='N' && responseTag[1]=='3' && responseTag[2]=='_')			//respond to a join request
+			{
+				updatingParticipantList=true;
+				participantListIterator=participantList.find(createKey(clientAddress));
+				if(participantListIterator==participantList.end())
+				{
+					cout<<"Ready process not in list\n";
+				}
+				else
+				{
+					//participantListIterator->second->isReady=true;
+					cout<<participantListIterator->second->username<<" is Ready\n";
+				}
+				updatingParticipantList=false;
+			}
 		break;
 		case 'C':
 			participantListIterator=participantList.find(createKey(clientAddress));
@@ -56,14 +76,27 @@ void identify()
 		case 'H':
 			if(responseTag[0]=='H' && responseTag[1]=='0' && responseTag[2]=='_')			//respond to a join request
 			{
+				//cout<<response<<endl;
 				strcpy(heartBeatMsg,"H0A:0:0:-");
 				isLeaderAlive=true;
 				//cout<<"HB\n";
-				while(sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0);
+				int n=sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+				while(n<0)
+				{
+					cout<<"error in responding to HB\n";
+					int n=sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+				}
 			}
 			else if(isLeader)
 			{
+				updatingParticipantList=true;
 				heartBeatMap.insert(make_pair(createKey(clientAddress),true));
+				responseCountIterator=responseCount.find(createKey(clientAddress));
+				if(responseCountIterator!=responseCount.end())
+				{
+					responseCount.erase(responseCountIterator);
+				}
+				updatingParticipantList=false;
 			}
 		break;
 	}
@@ -82,6 +115,18 @@ void threadSleep(int sec, int nSec)					//a method that allows threads to sleep 
 
 void *heartBeatThread(void *data)
 {
+	/* if(!self->isReady)
+	{	
+		strcpy(heartBeatMsg,"N3_:0:0:-");
+		if(sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&(leader->address),sizeof((leader->address)))<0)
+		{
+			cout<<"error in sending ready message\n";
+		}
+		else
+		{
+			cout<<"Ready message is sent\n";
+		}
+	} */
 	while(1)
 	{
 		while(updatingParticipantList || participantList.size()<=1);
@@ -91,18 +136,34 @@ void *heartBeatThread(void *data)
 			heartBeatMap.clear();					//clear the responses from the last heart beat
 			strcpy(msg,"H0_:0:0:-");				//set up the heart beat message
 			multicast(HEARTBEAT);					//send Heart Beat Request to all participants
-			threadSleep(0,10000000L);				//sleeping for 10 mSec
+			threadSleep(0,20000000L);				//sleeping for 10 mSec
 			//check the responses from all the clients
 			for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 			{
-				if(participantListIterator->second!=leader)
+				if(participantListIterator->second!=leader )//&& participantListIterator->second->isReady)
 				{
+					//cout<<participantListIterator->second->username<<endl;
 					//check if a participant has responded or not
 					if(heartBeatMap.find(participantListIterator->first)==heartBeatMap.end())			
 					{
-						cout<<participantListIterator->second->username<<" is removed\n";
-						participantList.erase(participantListIterator);
-						printParticipantList();	
+						//cout<<participantListIterator->second->username<<endl;
+						responseCountIterator=responseCount.find(participantListIterator->first);
+						if(responseCountIterator==responseCount.end())
+						{
+							responseCount.insert(make_pair(participantListIterator->first,1));
+						}
+						else
+						{
+							responseCountIterator->second=responseCountIterator->second+1;
+							cout<<participantListIterator->second->username<<" count - "<<responseCountIterator->second<<endl;
+							if(responseCountIterator->second >=5)
+							{
+								cout<<participantListIterator->second->username<<" is dead\n";
+								participantList.erase(participantListIterator);
+								responseCount.erase(responseCountIterator);
+								printParticipantList();	
+							}
+						}
 					}
 				}
 			}
@@ -111,11 +172,10 @@ void *heartBeatThread(void *data)
 		{
 			//cout<<"Not Leader\n";
 			isLeaderAlive=false;
-			threadSleep(0,15000000L);				//sleeping for 15 mSec
+			threadSleep(1,0);				//sleeping for 15 mSec
 			if(!isLeaderAlive)
 			{
 				cout<<"Leader dead\n";
-				
 				participantListIterator=participantList.find(createKey(leader->address));
 				if(participantListIterator!=participantList.end())			
 				{
@@ -130,6 +190,7 @@ void *heartBeatThread(void *data)
 				}
 				else
 				{
+					//leaderElection();
 					//TODO start election
 					//TODO inform all others
 				}
@@ -164,7 +225,10 @@ void *networkThread(void *data)
 		else
 		{
 			response[n]=0;
-			//cout<<response<<endl;
+			/* if(response[0]=='N')			//respond to a join request
+			{
+				cout<<response<<endl;
+			} */
 			if(breakDownMsg()==0)
 			{
 				identify();

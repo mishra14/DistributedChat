@@ -45,6 +45,8 @@ struct participant									//holds the data for one participant
 	string username;
 };
 
+std::map <string, int> responseCount;										//map of key - IP:PORT and value - bool to keep track of which clients are alive
+std::map <string, int>::iterator responseCountIterator;						//iterator for heartBeatMap
 std::map <string, bool> heartBeatMap;										//map of key - IP:PORT and value - bool to keep track of which clients are alive
 std::map <string, bool>::iterator heartBeatMapIterator;						//iterator for heartBeatMap
 std::map <string, struct participant * > participantList;					//map of key - IP:PORT value - participant struct
@@ -177,7 +179,12 @@ int multicast(int type)
 		{
 			if(participantListIterator->second!=leader)
 			{
+				//cout<<"HB to "<<participantListIterator->second->username<<" ";
 				result*=sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+			}
+			else
+			{
+				//cout<<"HB not to "<<participantListIterator->second->username<<endl;
 			}
 		}
 	}
