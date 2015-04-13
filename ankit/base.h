@@ -145,6 +145,10 @@ void printParticipantList()
 	cout<<"-------------------------------\n";
 	for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 	{
+		if(participantListIterator->second==self)
+		{
+			cout<<"Self - \n";
+		}
 		cout<<participantListIterator->first<<endl;
 		printParticipant(participantListIterator->second);
 		cout<<endl;
@@ -190,7 +194,7 @@ int multicast(int type)
 		strcat(heartBeatMsg,"H0_:0:0:-");
 		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 		{
-			if(participantListIterator->second!=leader)
+			if(participantListIterator->second!=self)
 			{
 				//cout<<"HB to "<<participantListIterator->second->username<<" ";
 				result*=sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
@@ -220,8 +224,11 @@ int multicast(int type)
 		cout<<"Sending new leader announcement to ";
 		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 		{
-			cout<<participantListIterator->second->username<<", ";
-			result*=sendto(chatSocketFD,electionMsg,strlen(electionMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+			if(participantListIterator->second!=self)
+			{
+				cout<<participantListIterator->second->username<<", ";
+				result*=sendto(chatSocketFD,electionMsg,strlen(electionMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+			}
 		}
 		cout<<endl;
 	}
@@ -284,7 +291,7 @@ void receiveParticipantList()
 			response[n]=0;
 			breakDownMsg();
 			//cout<<response<<endl;
-			//cout<<responseMsg<<endl;
+			cout<<responseMsg<<endl;
 			char *second, *third, *fourth, *fifth;					//pointers to the data within the message
 			second=strstr(responseMsg,":");
 			if(second!=NULL)
@@ -337,7 +344,22 @@ void receiveParticipantList()
 				cout<<"Error in receiving participant 5\n";
 				break;
 			}
+		
 		}
+		string selfKey(createKey(selfAddress));
+		//cout<<"Self Key : "<<selfKey<<endl;
+		participantListIterator=participantList.find(selfKey);
+		if(participantListIterator==participantList.end())
+		{
+			cout<<"Error is participant List : Self Node not found\n";
+		}
+		else
+		{
+			self=participantListIterator->second;
+		}
+		//cout<<"Self - \n";
+		//printParticipant(self);
+		isLeader=(self==leader)?true:false;
 		//printParticipantList();
 	}
 }
