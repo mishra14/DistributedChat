@@ -1,16 +1,5 @@
 #include "base.h"
 
-void leaderElection()
-{
-	cout<<"Election\n";
-	participantListIterator=participantList.find(createKey(self->address));
-	for(; participantListIterator!=participantList.end();participantListIterator++)
-	{
-		printParticipant(participantListIterator->second);
-	}
-}
-
-
 void identify()
 {
 	switch(responseTag[0])
@@ -35,23 +24,17 @@ void identify()
 				else
 				{
 					//send an ACK with expectant paricipant list size
-					snprintf(msg,1000,"N0A:%d",participantList.size());
-					sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
-					//send back the participant list
-					for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
-					{
-						strcpy(msg,serializeParticipant((participantListIterator->second)));
-						//cout<<msg<<endl;
-						if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
-						{
-							cout<<"Error in sending\n";
-						}
-					}
+					sendParticipantList(MULTICAST);							//send participant list to all participants
 					//print updated list
 					printParticipantList();
 					
 				}
 				updatingParticipantList=false;
+			}
+			else if(response[0]=='N' && response[1]=='0' && response[2]=='A')
+			{
+				receiveParticipantList();
+				printParticipantList();
 			}
 			else if(responseTag[0]=='N' && responseTag[1]=='3' && responseTag[2]=='_')			//respond to a join request
 			{
@@ -78,7 +61,9 @@ void identify()
 			{
 				//cout<<response<<endl;
 				strcpy(heartBeatMsg,"H0A:0:0:-");
+				//pthread_mutex_lock(&isLeaderAliveMutex);
 				isLeaderAlive=true;
+				//pthread_mutex_unlock(&isLeaderAliveMutex);
 				//cout<<"HB\n";
 				int n=sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
 				while(n<0)
@@ -99,6 +84,72 @@ void identify()
 				updatingParticipantList=false;
 			}
 		break;
+		case 'E':
+		if(responseTag[0]=='E' && responseTag[1]=='1' && responseTag[2]=='_')			//request for election
+		{
+			cout<<"Election request received\n";
+			//respond if self id higher than sender (should be)
+			strcpy(electionMsg,"E1A:0:0:-");
+			if(sendto(chatSocketFD,electionMsg,strlen(electionMsg),0,(struct sockaddr *)&(clientAddress),sizeof(clientAddress))<0)
+			{
+				cout<<"Error in responding to election request\n";
+			}
+			//start an election yourself
+			if(!electionOnGoing)
+			{
+				//pthread_mutex_lock(&electionOnGoingMutex);
+				electionOnGoing=true;
+				//pthread_mutex_unlock(&electionOnGoingMutex);
+				pthread_mutex_lock(&electionMutex);
+				cout<<"Sending a start signal on reception\n";
+				pthread_cond_signal(&electionBeginCondition);
+				pthread_mutex_unlock(&electionMutex);
+			}
+		}
+		else if(responseTag[0]=='E' && responseTag[1]=='1' && responseTag[2]=='A')			//response to an election request
+		{
+			//bow out of the election 
+			if(electionOnGoing)
+			{
+				participantListIterator=participantList.find(createKey(clientAddress));
+				if(participantListIterator!=participantList.end())
+				{
+					//pthread_mutex_lock(&electionBowOutMutex);
+					electionBowOut=true;				//this will force the election thread to bow out when it wakes up
+					//pthread_mutex_unlock(&electionBowOutMutex);
+					cout<<"Bow out for "<<participantListIterator->second->username<<endl;
+				}
+				else
+				{
+					cout<<"Election response from unknown client : "<<createKey(clientAddress)<<endl;
+				}
+			}
+		}
+		else if(responseTag[0]=='E' && responseTag[1]=='2' && responseTag[2]=='_')			//broadcast of new leader
+		{
+			//pthread_mutex_lock(&isLeaderAliveMutex);
+			isLeaderAlive=true;
+			//pthread_mutex_unlock(&isLeaderAliveMutex);
+			//pthread_mutex_lock(&electionOnGoingMutex);
+			electionOnGoing=false;
+			//pthread_mutex_unlock(&electionOnGoingMutex);
+			participantListIterator=participantList.find(createKey(clientAddress));
+			if(participantListIterator!=participantList.end())
+			{
+				cout<<"leader : "<<participantListIterator->second->username<<endl;
+				leader=participantListIterator->second;
+			}
+			else
+			{
+				//unknown participant has sent a leader broadcast
+				cout<<"Leader Unknown\n";
+			}
+		}
+		else if(responseTag[0]=='E' && responseTag[1]=='2' && responseTag[2]=='A')			//response to new leader broadcast
+		{
+			
+		}
+		break;
 	}
 }
 
@@ -110,8 +161,57 @@ void threadSleep(int sec, int nSec)					//a method that allows threads to sleep 
 	while(nanosleep(&sleepTime, &leftTime)<0)
 	{
 		sleepTime=leftTime;
+	} 
+}
+
+void *electionThread(void *data)
+{
+	while(1)
+	{
+		pthread_mutex_lock(&electionMutex);
+		pthread_cond_wait(&electionBeginCondition, &electionMutex);			//wait for the signal that the leader is dead
+		cout<<"starting new Election\n";		//start the election
+		//pthread_mutex_lock(&electionBlockMutex);
+		//pthread_mutex_lock(&electionOnGoingMutex);
+		electionOnGoing=true;
+		//pthread_mutex_unlock(&electionOnGoingMutex);
+		//pthread_mutex_lock(&electionBowOutMutex);
+		//electionBowOut=false;
+		//pthread_mutex_unlock(&electionBowOutMutex);
+		
+		//while(!isLeaderAlive)
+		{
+			multicast(ELECTION);
+			threadSleep(1,0);
+			if(!electionBowOut)
+			{
+				//declare self as leader
+				cout<<"Self as leader\n";
+				//pthread_mutex_lock(&isLeaderAliveMutex);
+				isLeaderAlive=true;
+				//pthread_mutex_unlock(&isLeaderAliveMutex);
+				isLeader=true;
+				//pthread_mutex_lock(&electionOnGoingMutex);
+				electionOnGoing=false;
+				//pthread_mutex_unlock(&electionOnGoingMutex);
+				//pthread_mutex_lock(&electionBowOutMutex);
+				electionBowOut=false;				
+				//pthread_mutex_unlock(&electionBowOutMutex);
+				leader=self;
+				multicast(LEADER);
+				sendParticipantList(MULTICAST);							//send participant list to all participants
+				printParticipantList();	
+			}
+			else
+			{
+				threadSleep(2,0);
+			}
+		}
+		//pthread_mutex_unlock(&electionBlockMutex);
+		pthread_mutex_unlock(&electionMutex);
 	}
 }
+
 
 void *heartBeatThread(void *data)
 {
@@ -129,11 +229,12 @@ void *heartBeatThread(void *data)
 	} */
 	while(1)
 	{
+		//pthread_mutex_lock(&electionBlockMutex);
 		while(updatingParticipantList || participantList.size()<=1);
 		if(isLeader)
 		{
 			//cout<<"leader\n";
-			heartBeatMap.clear();					//clear the responses from the last heart beat
+			heartBeatMap.clear();	 				//clear the responses from the last heart beat
 			strcpy(msg,"H0_:0:0:-");				//set up the heart beat message
 			multicast(HEARTBEAT);					//send Heart Beat Request to all participants
 			threadSleep(0,20000000L);				//sleeping for 10 mSec
@@ -161,6 +262,7 @@ void *heartBeatThread(void *data)
 								cout<<participantListIterator->second->username<<" is dead\n";
 								participantList.erase(participantListIterator);
 								responseCount.erase(responseCountIterator);
+								sendParticipantList(MULTICAST);							//send participant list to all participants
 								printParticipantList();	
 							}
 						}
@@ -170,32 +272,65 @@ void *heartBeatThread(void *data)
 		}
 		else
 		{
-			//cout<<"Not Leader\n";
-			isLeaderAlive=false;
-			threadSleep(1,0);				//sleeping for 15 mSec
-			if(!isLeaderAlive)
+			//cout<<"ElectionOnGoin : "<<electionOnGoing<<endl;
+			if(!electionOnGoing)
 			{
-				cout<<"Leader dead\n";
-				participantListIterator=participantList.find(createKey(leader->address));
-				if(participantListIterator!=participantList.end())			
+				//pthread_mutex_lock(&isLeaderAliveMutex);
+				isLeaderAlive=false;
+				//pthread_mutex_unlock(&isLeaderAliveMutex);
+				threadSleep(1,0);				//sleeping for 15 mSec
+				if(!isLeaderAlive && !electionOnGoing && !isLeader)
 				{
-					cout<<participantListIterator->second->username<<" is removed\n";
-					participantList.erase(participantListIterator);
-					printParticipantList();
-				}
-				if(participantList.size()==1)
-				{
-					leader=self;
-					isLeader=true;
-				}
-				else
-				{
-					//leaderElection();
-					//TODO start election
-					//TODO inform all others
+					cout<<"Leader dead; isLeaderAlive : "<<isLeaderAlive<<" electionOnGoing : "<<electionOnGoing<<endl;
+					participantListIterator=participantList.find(createKey(leader->address));
+					if(participantListIterator!=participantList.end())			
+					{
+						cout<<participantListIterator->second->username<<" is removed\n";
+						participantList.erase(participantListIterator);
+						printParticipantList();
+					}
+					if(participantList.size()==1)
+					{
+						leader=self;
+						isLeader=true;
+					}
+					else
+					{
+						participantListIterator=participantList.find(createKey(self->address));
+						participantListIterator++;
+						
+						if(participantListIterator==participantList.end())
+						{
+							cout<<"Self as leader; No higher process\n";
+							//pthread_mutex_lock(&isLeaderAliveMutex);
+							isLeaderAlive=true;
+							//pthread_mutex_unlock(&isLeaderAliveMutex);
+							isLeader=true;
+							//pthread_mutex_lock(&electionOnGoingMutex);
+							electionOnGoing=false;
+							//pthread_mutex_unlock(&electionOnGoingMutex);
+							//pthread_mutex_lock(&electionBowOutMutex);
+							electionBowOut=false;				
+							//pthread_mutex_unlock(&electionBowOutMutex);
+							leader=self;
+							multicast(LEADER);
+							sendParticipantList(MULTICAST);							//send participant list to all participants
+							printParticipantList();	
+						}
+						else if(!electionOnGoing)// && self!=leader)
+						{
+							pthread_mutex_lock(&electionMutex);
+							cout<<"Sending a start signal on leader dead\n";
+							pthread_cond_signal(&electionBeginCondition);
+							pthread_mutex_unlock(&electionMutex);
+						}
+						//TODO start election
+						//TODO inform all others
+					}
 				}
 			}
 		}
+		//pthread_mutex_unlock(&electionBlockMutex);
 	}
 }
 
@@ -225,10 +360,7 @@ void *networkThread(void *data)
 		else
 		{
 			response[n]=0;
-			/* if(response[0]=='N')			//respond to a join request
-			{
-				cout<<response<<endl;
-			} */
+			//cout<<response<<Endl;
 			if(breakDownMsg()==0)
 			{
 				identify();
@@ -301,7 +433,7 @@ int main(int argc, char **argv)
 	}
 	else			//join a chat
 	{
-		char ip[17],port[6],username[20];
+		char ip[17],port[6];
 		char *tok;
 		tok=strstr(argv[2],":");
 		if(tok==NULL)
@@ -357,79 +489,8 @@ int main(int argc, char **argv)
 		}
 		else if(response[0]=='N' && response[1]=='0' && response[2]=='A')
 		{
-			//printf("Join request Accepted\n");
-			int participantCount=atoi(&response[4]);
-			if(participantCount<2)				//2 as the list should have host+new joinee at the least
-			{
-				cout<<"Join Request Error : participant List\n";
-				exit(1);
-			}
-			else
-			{
-				for(int i=0;i<participantCount;i++)
-				{
-					n=recvfrom(chatSocketFD,response,1000,0,NULL,NULL);
-					if(n<0)
-					{
-						cout<<"Error in receiving participant\n";
-						break;
-					}
-					response[n]=0;
-					//cout<<response<<endl;
-					char *second, *third, *fourth, *fifth;					//pointers to the data within the message
-					second=strstr(response,":");
-					if(second!=NULL)
-					{
-						third=strstr(second+1,":");
-						if(third==NULL)
-						{
-							cout<<"Error in receiving participant\n";
-							break;
-						}
-						fourth=strstr(third+1,":");
-						if(fourth==NULL)
-						{
-							cout<<"Error in receiving participant\n";
-							break;
-						}
-						fifth=strstr(fourth+1,":");
-						char *ip=new char[INET_ADDRSTRLEN];
-						char *port=new char[6];
-						char *seq=new char[10];
-						strncpy(ip,response,(second-response));
-						ip[INET_ADDRSTRLEN-1]='\0';
-						strncpy(port,second+1,(third-second-1));
-						port[(third-second-1)]='\0';
-						strncpy(seq,third+1,(fourth-third-1));
-						seq[(fourth-third-1)]='\0';
-						strncpy(username,fourth+1,((fifth!=NULL)?(fifth-fourth-1):20));
-						//cout<<"Participant - \n"<<ip<<"\n"<<port<<"\n"<<seq<<"\n"<<username<<((fifth!=NULL)?"\nleader":"")<<endl;
-						if((atoi(port)<1024)||(atoi(port)>999999999))
-						{
-							cout<<"Error in receiving participant\n";
-							break;
-						}
-						struct sockaddr_in participantAddress;
-						bzero(&participantAddress,sizeof(participantAddress));
-						participantAddress.sin_family=AF_INET;
-						participantAddress.sin_addr.s_addr=inet_addr(ip);
-						participantAddress.sin_port=htons(atoi(port));
-						string clientKey(createKey(participantAddress));
-						struct participant *participant=createParticipant(participantAddress,0, username);
-						participantList.insert(make_pair(clientKey,participant));
-						if(fifth!=NULL)
-						{
-							leader=participant;
-						}	
-					}
-					else
-					{
-						cout<<"Error in receiving participant\n";
-						break;
-					}
-					
-				}
-			}
+			//cout<<response<<endl;
+			receiveParticipantList();
 		}
 		else
 		{
@@ -490,6 +551,11 @@ int main(int argc, char **argv)
 		printf("Error in creating user thread\n");
 		exit(1);
 	}
+	if(pthread_create(&electionThreadID,NULL, electionThread,NULL))
+	{
+		printf("Error in creating user thread\n");
+		exit(1);
+	}
 	if(pthread_join(userThreadID, NULL))
 	{
 		printf("Error joining user thread \n");
@@ -499,6 +565,10 @@ int main(int argc, char **argv)
 		printf("Error joining network thread \n");
 	}
 	if(pthread_join(heartBeatThreadID, NULL))
+	{
+		printf("Error joining network thread \n");
+	}
+	if(pthread_join(electionThreadID, NULL))
 	{
 		printf("Error joining network thread \n");
 	}
