@@ -27,7 +27,6 @@ void identify()
 					sendParticipantList(MULTICAST);							//send participant list to all participants
 					//print updated list
 					printParticipantList();
-					
 				}
 				updatingParticipantList=false;
 			}
@@ -53,8 +52,45 @@ void identify()
 			}
 		break;
 		case 'C':
-			participantListIterator=participantList.find(createKey(clientAddress));
-			cout<<participantListIterator->second->username<<":"<<responseMsg;
+			if(responseTag[0]=='C' && responseTag[1]=='0' && responseTag[2]=='_')
+			{
+				if(globalSeq==0)
+				{
+					//receiving the first chat message
+					globalSeq=atoi(responseGlobalSeq);
+					participantListIterator=participantList.find(createKey(clientAddress));
+					participantListIterator->second->seqNumber=atoi(responseLocalSeq);
+					cout<<participantListIterator->second->username<<":"<<responseMsg;
+				}
+				else
+				{
+					//not the first message; insert the message into the queue
+					holdBackQ.insert(make_pair(atoi(responseGlobalSeq),createMessage(response,atoi(responseLocalSeq),atoi(responseGlobalSeq),createKey(clientAddress))));
+					//check the queue for deliverable messages
+					for(holdBackQIterator=holdBackQ.begin();holdBackQIterator!=holdBackQ.end();holdBackQIterator++)
+					{
+						 if(holdBackQIterator->first ==globalSeq+1)
+						{
+							globalSeq=holdBackQIterator->first;
+							participantListIterator=participantList.find(createKey(clientAddress));
+							participantListIterator->second->seqNumber=atoi(responseLocalSeq);
+							cout<<participantListIterator->second->username<<":"<<responseMsg;
+						} 
+						else
+						{
+							//a sequence number is missing; send a request to all for retransmission;
+							cout<<"Sending sequence lost request for global seq : "<<(globalSeq+1)<<endl;
+							snprintf(msg,1000,"S3_:%d:%d:_",(globalSeq+1),0);
+							if(multicast(SEQUENCELOST)<0)
+							{
+								cout<<"error in sending sequence lost request\n";
+							}
+						}
+						//cout<<holdBackQIterator->first<<" : "<<holdBackQIterator->second->content;
+					}
+					//cout<<endl;
+				}
+			}
 		break;
 		case 'H':
 			if(responseTag[0]=='H' && responseTag[1]=='0' && responseTag[2]=='_')			//respond to a join request
@@ -156,9 +192,138 @@ void identify()
 			
 		}
 		break;
+		case 'S':
+		if(responseTag[0]=='S' && responseTag[1]=='2' && responseTag[2]=='_')			//sequence request
+		{
+			if(decentralized)
+			{
+				//this is a decentralized request for sequence
+				//respond with a valid proposed sequence number
+				proposedSeq=(globalSeq>proposedSeq)?(globalSeq+1):(proposedSeq+1);
+				if(proposedSeq==5)
+					proposedSeq++;
+				snprintf(msg, 1000, "S2A:%d:%d:%s",proposedSeq,atoi(responseLocalSeq),responseMsg);
+				if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
+				{
+					cout<<"Error in sending sequence proposal\n";
+				}
+				else
+				{
+					//add the message to a list for expecting an ACK
+				}
+			}
+		}
+		else if(responseTag[0]=='S' && responseTag[1]=='2' && responseTag[2]=='A')			//sequence response
+		{
+			if(decentralized)
+			{
+				seqBufferIterator=seqBuffer.find(atoi(responseLocalSeq));
+				if(seqBufferIterator!=seqBuffer.end())
+				{
+					seqBufferIterator->second->globalSeq=(atoi(responseGlobalSeq) > seqBufferIterator->second->globalSeq)?atoi(responseGlobalSeq):seqBufferIterator->second->globalSeq;
+					seqBufferIterator->second->ackCount++;
+					cout<<"received sequence response :"<<response<<"for :";
+					printMessage(seqBufferIterator->second);
+					if(seqBufferIterator->second->ackCount>=participantList.size())
+					{
+						//sequence response received from all participants; send the message now;
+						snprintf(msg, 1000,"C0_:%d:%d:%s",atoi(responseGlobalSeq),atoi(responseLocalSeq),responseMsg);
+						if(multicast(SEQUENCED)<0)
+						{
+							cout<<"Error in multicasting sequenced message\n";
+						}
+					}
+				}
+				else
+				{
+					cout<<"Sequence response for unknown message; discarding "<<response<<endl;
+				}
+			}
+		}
+		else if(responseTag[0]=='S' && responseTag[1]=='3' && responseTag[2]=='_')			//sequence lost request 
+		{
+			//check in hold back queue
+			for(holdBackQIterator=holdBackQ.begin();holdBackQIterator!=holdBackQ.end();holdBackQIterator++)
+			{
+				if(holdBackQIterator->first ==atoi(responseGlobalSeq))
+				{
+					//found the message; send back to the requester
+					snprintf(msg,1000,"S3A:%d:%d:%s:%s",holdBackQIterator->second->globalSeq,holdBackQIterator->second->localSeq,(holdBackQIterator->second->senderKey).c_str(),(holdBackQIterator->second->content).c_str());
+					if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
+					{
+						cout<<"Error in sending sequence lost response\n";
+						break;
+					}
+					else
+					{
+						return;
+					}
+				}
+			}
+			//check the seqBuffer
+			for(seqBufferIterator=seqBuffer.begin();seqBufferIterator!=seqBuffer.end();seqBufferIterator++)
+			{
+				if(seqBufferIterator->second->globalSeq==atoi(responseGlobalSeq))
+				{
+					snprintf(msg,1000,"S3A:%d:%d:%s:%s",holdBackQIterator->second->globalSeq,holdBackQIterator->second->localSeq,(holdBackQIterator->second->senderKey).c_str(),(holdBackQIterator->second->content).c_str());
+					if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
+					{
+						cout<<"Error in sending sequence lost response\n";
+					}
+					break;
+				}
+			}
+			
+		}
+		else if(responseTag[0]=='S' && responseTag[1]=='3' && responseTag[2]=='A')			//sequence lost response 
+		{
+			if(atoi(responseGlobalSeq)==(globalSeq+1))					//found the sequence which was lost
+			{
+				cout<<"sequenceLost response : "<<responseMsg<<endl;
+				char *second, *third;					//pointers to the data within the message
+				char *ipString = new char[20];
+				char *portString = new char[5];
+				second=strstr(responseMsg,":");
+				if(second==NULL)
+				{
+					cout<<"Error in sequence lost response break down - No port\n";
+					return ;
+				}
+				third=strstr(second+1,":");
+				if(third==NULL)
+				{
+					cout<<"Error in sequence lost response break down - No message\n";
+					return ;
+				}
+				strncpy(ipString,responseMsg,(second-responseMsg));
+				ipString[second-responseMsg]='\0';
+				strncpy(portString,second+1,(third-second-1));
+				portString[third-second-1]='\0';
+				//update clientAddress to reflect the details of the original sender
+				bzero(&clientAddress,sizeof(clientAddress));
+				clientAddress.sin_family=AF_INET;
+				if(inet_pton(AF_INET,ipString, &(selfAddress.sin_addr))<=0)
+				{
+					cout<<"Error in sequence lost response break down - unable to \n";
+				}
+				clientAddress.sin_port=htons(atoi(portString));
+				strcpy(response,third+1);
+				cout<<"original Msg : "<<response<<endl;
+				if(breakDownMsg())
+				{
+					identify();
+				}
+				else
+				{
+					//problem with the sequence lost response message;
+				}
+				
+			}
+		}
+		break;
 	}
 }
-
+ 
 void threadSleep(int sec, int nSec)					//a method that allows threads to sleep for the specified duration (in seconds and nano seconds)
 {
 	struct timespec sleepTime, leftTime;		//sleepTime contains the time to sleep; leftTime contains the sleepTime -actual sleepTime;
@@ -169,6 +334,14 @@ void threadSleep(int sec, int nSec)					//a method that allows threads to sleep 
 		sleepTime.tv_sec=leftTime.tv_sec;
 		sleepTime.tv_nsec=leftTime.tv_nsec;
 	} 
+}
+
+void *reliabilityThread(void *data)				//TODO
+{
+	while(1)
+	{
+		
+	}
 }
 
 void *electionThread(void *data)
@@ -350,8 +523,7 @@ void *userThread(void *data)
 	//printf("Starting User Thread\n");
 	while(fgets(msg,1000,stdin)!=NULL)
 	{
-		//TODO get sequence number first
-		multicast(CHAT);
+		multicast(SEQUENCE);				//send sequence request to sequencer or all participants
 		//sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
 	}
 }
@@ -536,6 +708,11 @@ int main(int argc, char **argv)
 		//printParticipant(leader);
 	}
 	//updatingParticipantList=false;
+	if(defaultPORT==8673)			//TODO remove this test code
+	{
+		holdBackQ.insert(make_pair(5,createMessage("C0_:5:5:hello",5,5,createKey(selfAddress))));
+	}
+	
 	
 	if(pthread_create(&userThreadID,NULL, userThread,NULL))
 	{

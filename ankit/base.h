@@ -16,6 +16,7 @@
 #include <map>
 #include <string>
 #include <iostream>
+#include <set>
 #include <stdlib.h>
 #include <time.h>
 #define CHAT 1
@@ -23,9 +24,13 @@
 #define ELECTION 3
 #define LEADER 4
 #define MULTICAST 5
+#define SEQUENCE 6
+#define SEQUENCED 7
+#define SEQUENCELOST 8
 
 using namespace std;
 
+int localSeq=0, globalSeq=0, proposedSeq=0;
 int defaultPORT=8672;
 int chatSocketFD, heartBeatSocketFD, electionSocketFD, sequencerSocketFD;
 struct sockaddr_in joinClientAddress, clientAddress, selfAddress;
@@ -39,11 +44,17 @@ char responseGlobalSeq[10];
 char responseLocalSeq[10];
 char responseMsg[1000];
 bool isLeader = false, updatingParticipantList = false, isLeaderAlive=true, electionOnGoing=false, electionBowOut=false;
+bool decentralized=true;
+
 
 pthread_t userThreadID,networkThreadID, heartBeatThreadID, electionThreadID;
 pthread_mutex_t electionOnGoingMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t electionBowOutMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t isLeaderAliveMutex = PTHREAD_MUTEX_INITIALIZER;	
+pthread_mutex_t seqBufferMutex = PTHREAD_MUTEX_INITIALIZER;	
+pthread_mutex_t txBufferMutex = PTHREAD_MUTEX_INITIALIZER;	
+pthread_mutex_t rxBufferMutex = PTHREAD_MUTEX_INITIALIZER;	
+pthread_mutex_t holdBackQMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t electionBlockMutex = PTHREAD_MUTEX_INITIALIZER;	
 
 pthread_mutex_t electionMutex = PTHREAD_MUTEX_INITIALIZER;	
@@ -56,6 +67,14 @@ struct participant									//holds the data for one participant
 	string username;
 };
 
+struct message
+{
+	string content;
+	string senderKey;
+	int localSeq;
+	int globalSeq;
+	int ackCount;
+};
 std::map <string, int> responseCount;										//map of key - IP:PORT and value - bool to keep track of which clients are alive
 std::map <string, int>::iterator responseCountIterator;						//iterator for heartBeatMap
 std::map <string, bool> heartBeatMap;										//map of key - IP:PORT and value - bool to keep track of which clients are alive
@@ -63,6 +82,17 @@ std::map <string, bool>::iterator heartBeatMapIterator;						//iterator for hear
 std::map <string, struct participant * > participantList;					//map of key - IP:PORT value - participant struct
 std::map <string, struct participant * >::iterator participantListIterator; 	//iterator for the participant list
 std::map <string, struct participant * >::iterator participantListIterator2; 	//second iterator for the participant list
+std::map <string, bool> ackList;												//map to hold a list of participants who have not acked a message
+std::map <int, struct message * > seqBuffer;								//map to hold messages while deciding sequence number; key - localSeq
+std::map <int, std::set<string> > txBuffer;				//map to hold messages after transmission, for reliability; key - globalSeq
+std::map <string, std::map <int, struct message * > > rxBuffer;				//map to hold messages after receiving; key1 - clientIP:PORT; key2 - localSeq;
+std::map <int, struct message * > holdBackQ;								//map to hold message before delivery; key - GlobalSeq;
+std::map <int, struct message * >::iterator seqBufferIterator;
+std::map <int, struct message * >::iterator txBufferIterator;
+std::map <string, std::map <int, struct message * > > ::iterator rxBufferIterator1;
+std::map <int, struct message * >::iterator rxBufferIterator2;
+std::map <int, struct message * >::iterator holdBackQIterator;
+struct message *message;
 struct participant *leader, *self;	
 
 
@@ -73,6 +103,27 @@ bool compareParticipants()					//TODO - fill this comparison function for the ma
 	return result;
 }
 
+struct message * createMessage(string content, int localSeq, string senderKey)
+{
+	struct message * message = new struct message;
+	message ->content = content;
+	message ->localSeq=localSeq;
+	message ->globalSeq=0;
+	message ->ackCount=0;
+	message ->senderKey=senderKey;
+	return message;
+}
+struct message * createMessage(string content, int localSeq, int globalSeq, string senderKey)
+{
+	struct message * message = new struct message;
+	message ->content = content;
+	message ->localSeq=localSeq;
+	message ->globalSeq=globalSeq;
+	message ->ackCount=0;
+	message ->senderKey=senderKey;
+	return message;
+}
+
 struct participant * createParticipant(struct sockaddr_in address, int seqNumber, string name)		//create a participant based on raw data
 {
 	struct participant * participant = new struct participant;
@@ -81,7 +132,6 @@ struct participant * createParticipant(struct sockaddr_in address, int seqNumber
 	participant->username=name;
 	return participant;
 }
-
 
 in_port_t getPort(struct sockaddr *address)					//get port number in raw format
 {
@@ -130,6 +180,11 @@ char *createKey(struct sockaddr_in address)
 	char *key=new char[INET_ADDRSTRLEN+6];
 	snprintf(key,INET_ADDRSTRLEN+6,"%s:%d",ip,ntohs(getPort((struct sockaddr*)&address)));
 	return key;
+}
+
+void printMessage (struct message *message)
+{
+	cout<<message->senderKey<<" : "<<message->content<<"ackCount = "<<message->ackCount<<endl;
 }
 void printParticipant(struct participant *participant)
 {
@@ -181,11 +236,14 @@ int multicast(int type)
 	if(type==CHAT)					//chat type message
 	{
 		chatMsg[0]='\0';
-		strcat(chatMsg,"C0_:0:0:");
+		snprintf(chatMsg,1000,"C0_:%d:%d:",globalSeq,localSeq);
 		strcat(chatMsg,msg);
 		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 		{
-			result*=sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+			if(sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
+			{
+				result=-1;
+			}
 		}
 	}
 	else if(type==HEARTBEAT)			//heartbeat type message
@@ -197,7 +255,10 @@ int multicast(int type)
 			if(participantListIterator->second!=self)
 			{
 				//cout<<"HB to "<<participantListIterator->second->username<<" ";
-				result*=sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+				if(sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
+				{
+					result=-1;
+				}
 			}
 			else
 			{
@@ -214,7 +275,10 @@ int multicast(int type)
 		for(; participantListIterator!=participantList.end();participantListIterator++)
 		{
 			cout<<"Election Req to "<<participantListIterator->second->username<<" ";
-			result*=sendto(chatSocketFD,electionMsg,strlen(electionMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+			if(sendto(chatSocketFD,electionMsg,strlen(electionMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
+			{
+				result=-1;
+			}
 		}
 	}
 	else if(type==LEADER)					//chat type message
@@ -227,10 +291,59 @@ int multicast(int type)
 			if(participantListIterator->second!=self)
 			{
 				cout<<participantListIterator->second->username<<", ";
-				result*=sendto(chatSocketFD,electionMsg,strlen(electionMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address));
+				if(sendto(chatSocketFD,electionMsg,strlen(electionMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
+				{
+					result=-1;
+				}
 			}
 		}
 		cout<<endl;
+	}
+	else if(type==SEQUENCE)					//chat type message
+	{
+		pthread_mutex_lock(&seqBufferMutex);
+		localSeq++;
+		chatMsg[0]='\0';
+		snprintf(chatMsg,1000,"S2_:0:%d:",localSeq);
+		strcat(chatMsg,msg);
+		seqBuffer.insert(make_pair(localSeq,createMessage(chatMsg,localSeq,createKey(selfAddress))));
+		pthread_mutex_unlock(&seqBufferMutex);
+		cout<<"Sending sequence request for : "<<chatMsg<<endl;
+		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+		{
+			if(sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
+			{
+				result=-1;
+			}
+		}
+	}
+	else if(type==SEQUENCED)					//chat type message
+	{
+		std::set<string> ackList;
+		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+		{
+			if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
+			{
+				result=-1;
+			}
+			else
+			{
+				ackList.insert(participantListIterator->first);
+			}
+		}
+		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message to
+		txBuffer.insert(make_pair(atoi(responseGlobalSeq),ackList));
+	}
+	else if(type==SEQUENCELOST)					//chat type message
+	{
+		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+		{
+			if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
+			{
+				result=-1;
+			}
+		}
+		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message to
 	}
 	return result;
 }
@@ -264,6 +377,19 @@ int breakDownMsg()
 	responseLocalSeq[(fourth-third-1)]='\0';
 	strcpy(responseMsg,fourth+1);
 	//cout<<"BreakDown - \n"<<responseTag<<"\n"<<responseGlobalSeq<<"\n"<<responseLocalSeq<<"\n"<<responseMsg<<endl;
+	struct message * tempMessage=createMessage(response, atoi(responseLocalSeq), createKey(clientAddress));
+	tempMessage->globalSeq=atoi(responseGlobalSeq);
+	rxBufferIterator1=rxBuffer.find(createKey(clientAddress));
+	if(rxBufferIterator1!=rxBuffer.end())
+	{
+		(rxBufferIterator1->second).insert(make_pair(tempMessage->localSeq,tempMessage));
+	}
+	else
+	{
+		std::map<int, struct message *> rxBufferInner;
+		rxBufferInner.insert( make_pair(tempMessage->localSeq,tempMessage));
+		rxBuffer.insert(make_pair(createKey(clientAddress),rxBufferInner));
+	}
 	return 0;
 }
 
@@ -332,7 +458,7 @@ void receiveParticipantList()
 				participantAddress.sin_addr.s_addr=inet_addr(ip);
 				participantAddress.sin_port=htons(atoi(port));
 				string clientKey(createKey(participantAddress));
-				struct participant *participant=createParticipant(participantAddress,0, username);
+				struct participant *participant=createParticipant(participantAddress,atoi(seq), username);
 				participantList.insert(make_pair(clientKey,participant));
 				if(fifth!=NULL)
 				{

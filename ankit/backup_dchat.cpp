@@ -61,9 +61,9 @@ void identify()
 			{
 				//cout<<response<<endl;
 				strcpy(heartBeatMsg,"H0A:0:0:-");
-				//pthread_mutex_lock(&isLeaderAliveMutex);
+				pthread_mutex_lock(&isLeaderAliveMutex);
 				isLeaderAlive=true;
-				//pthread_mutex_unlock(&isLeaderAliveMutex);
+				pthread_mutex_unlock(&isLeaderAliveMutex);
 				//cout<<"HB\n";
 				int n=sendto(chatSocketFD,heartBeatMsg,strlen(heartBeatMsg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
 				while(n<0)
@@ -87,7 +87,7 @@ void identify()
 		case 'E':
 		if(responseTag[0]=='E' && responseTag[1]=='1' && responseTag[2]=='_')			//request for election
 		{
-			cout<<"Election request received\n";
+			cout<<"Election request received from : "<<participantList.find(createKey(clientAddress))->second->username<<endl;
 			//respond if self id higher than sender (should be)
 			strcpy(electionMsg,"E1A:0:0:-");
 			if(sendto(chatSocketFD,electionMsg,strlen(electionMsg),0,(struct sockaddr *)&(clientAddress),sizeof(clientAddress))<0)
@@ -95,11 +95,12 @@ void identify()
 				cout<<"Error in responding to election request\n";
 			}
 			//start an election yourself
+			cout<<"Election On going : "<<electionOnGoing<<endl;
 			if(!electionOnGoing)
 			{
-				//pthread_mutex_lock(&electionOnGoingMutex);
-				electionOnGoing=true;
-				//pthread_mutex_unlock(&electionOnGoingMutex);
+				pthread_mutex_lock(&isLeaderAliveMutex);
+				isLeaderAlive=false;
+				pthread_mutex_unlock(&isLeaderAliveMutex);
 				pthread_mutex_lock(&electionMutex);
 				cout<<"Sending a start signal on reception\n";
 				pthread_cond_signal(&electionBeginCondition);
@@ -114,9 +115,10 @@ void identify()
 				participantListIterator=participantList.find(createKey(clientAddress));
 				if(participantListIterator!=participantList.end())
 				{
-					//pthread_mutex_lock(&electionBowOutMutex);
+					pthread_mutex_lock(&electionBowOutMutex);
+					cout<<"Setting BoutOut to true : networkThread1\n";
 					electionBowOut=true;				//this will force the election thread to bow out when it wakes up
-					//pthread_mutex_unlock(&electionBowOutMutex);
+					pthread_mutex_unlock(&electionBowOutMutex);
 					cout<<"Bow out for "<<participantListIterator->second->username<<endl;
 				}
 				else
@@ -127,12 +129,16 @@ void identify()
 		}
 		else if(responseTag[0]=='E' && responseTag[1]=='2' && responseTag[2]=='_')			//broadcast of new leader
 		{
-			//pthread_mutex_lock(&isLeaderAliveMutex);
+			pthread_mutex_lock(&isLeaderAliveMutex);
 			isLeaderAlive=true;
-			//pthread_mutex_unlock(&isLeaderAliveMutex);
-			//pthread_mutex_lock(&electionOnGoingMutex);
+			pthread_mutex_unlock(&isLeaderAliveMutex);
+			pthread_mutex_lock(&electionOnGoingMutex);
 			electionOnGoing=false;
-			//pthread_mutex_unlock(&electionOnGoingMutex);
+			pthread_mutex_unlock(&electionOnGoingMutex);
+			pthread_mutex_lock(&electionBowOutMutex);
+			cout<<"Setting BoutOut to true : networkThread2\n";
+			electionBowOut=true;
+			pthread_mutex_unlock(&electionBowOutMutex);
 			participantListIterator=participantList.find(createKey(clientAddress));
 			if(participantListIterator!=participantList.end())
 			{
@@ -152,7 +158,7 @@ void identify()
 		break;
 	}
 }
-
+ 
 void threadSleep(int sec, int nSec)					//a method that allows threads to sleep for the specified duration (in seconds and nano seconds)
 {
 	struct timespec sleepTime, leftTime;		//sleepTime contains the time to sleep; leftTime contains the sleepTime -actual sleepTime;
@@ -160,7 +166,8 @@ void threadSleep(int sec, int nSec)					//a method that allows threads to sleep 
 	sleepTime.tv_nsec=nSec;
 	while(nanosleep(&sleepTime, &leftTime)<0)
 	{
-		sleepTime=leftTime;
+		sleepTime.tv_sec=leftTime.tv_sec;
+		sleepTime.tv_nsec=leftTime.tv_nsec;
 	} 
 }
 
@@ -171,43 +178,46 @@ void *electionThread(void *data)
 		pthread_mutex_lock(&electionMutex);
 		pthread_cond_wait(&electionBeginCondition, &electionMutex);			//wait for the signal that the leader is dead
 		cout<<"starting new Election\n";		//start the election
-		//pthread_mutex_lock(&electionBlockMutex);
-		//pthread_mutex_lock(&electionOnGoingMutex);
-		electionOnGoing=true;
-		//pthread_mutex_unlock(&electionOnGoingMutex);
-		//pthread_mutex_lock(&electionBowOutMutex);
-		//electionBowOut=false;
-		//pthread_mutex_unlock(&electionBowOutMutex);
-		
-		//while(!isLeaderAlive)
+		if(!electionOnGoing)
 		{
-			multicast(ELECTION);
-			threadSleep(1,0);
-			if(!electionBowOut)
+			pthread_mutex_lock(&electionOnGoingMutex);
+			electionOnGoing=true;
+			pthread_mutex_unlock(&electionOnGoingMutex);
+			while(!isLeaderAlive)
 			{
-				//declare self as leader
-				cout<<"Self as leader\n";
-				//pthread_mutex_lock(&isLeaderAliveMutex);
-				isLeaderAlive=true;
-				//pthread_mutex_unlock(&isLeaderAliveMutex);
-				isLeader=true;
-				//pthread_mutex_lock(&electionOnGoingMutex);
-				electionOnGoing=false;
-				//pthread_mutex_unlock(&electionOnGoingMutex);
-				//pthread_mutex_lock(&electionBowOutMutex);
+				pthread_mutex_lock(&electionBowOutMutex);
+				cout<<"Setting BoutOut to false : electionThread1\n";
 				electionBowOut=false;				
-				//pthread_mutex_unlock(&electionBowOutMutex);
-				leader=self;
-				multicast(LEADER);
-				sendParticipantList(MULTICAST);							//send participant list to all participants
-				printParticipantList();	
-			}
-			else
-			{
-				threadSleep(2,0);
+				pthread_mutex_unlock(&electionBowOutMutex);
+				multicast(ELECTION);				//Send Election request to all higher processes
+				threadSleep(0,20000000L);					//wait for them to respond
+				cout<<"Election Thread : isLeaderAlive : "<<isLeaderAlive<<" electionBowOut : "<<electionBowOut<<endl;
+				if(!electionBowOut && !isLeaderAlive)		//none of the higher processes are alive; Hence make self as the leader and broadcast the same
+				{
+					//threadSleep(1,0);
+					cout<<"Self as leader; No higher process responding\n";
+					pthread_mutex_lock(&isLeaderAliveMutex);
+					isLeaderAlive=true;
+					pthread_mutex_unlock(&isLeaderAliveMutex);
+					isLeader=true;
+					pthread_mutex_lock(&electionOnGoingMutex);
+					electionOnGoing=false;
+					pthread_mutex_unlock(&electionOnGoingMutex);
+					pthread_mutex_lock(&electionBowOutMutex);
+					cout<<"Setting BoutOut to false : electionThread2\n";
+					electionBowOut=false;				
+					pthread_mutex_unlock(&electionBowOutMutex);
+					leader=self;
+					multicast(LEADER);
+					sendParticipantList(MULTICAST);							//send participant list to all participants
+					printParticipantList();	
+				}
+				else
+				{
+					threadSleep(1,0);				//If atleast one higher process is alive, then give them time to finish the election
+				}
 			}
 		}
-		//pthread_mutex_unlock(&electionBlockMutex);
 		pthread_mutex_unlock(&electionMutex);
 	}
 }
@@ -275,13 +285,13 @@ void *heartBeatThread(void *data)
 			//cout<<"ElectionOnGoin : "<<electionOnGoing<<endl;
 			if(!electionOnGoing)
 			{
-				//pthread_mutex_lock(&isLeaderAliveMutex);
+				pthread_mutex_lock(&isLeaderAliveMutex);
 				isLeaderAlive=false;
-				//pthread_mutex_unlock(&isLeaderAliveMutex);
+				pthread_mutex_unlock(&isLeaderAliveMutex);
 				threadSleep(1,0);				//sleeping for 15 mSec
-				if(!isLeaderAlive && !electionOnGoing && !isLeader)
+				if(!isLeaderAlive && !electionOnGoing)
 				{
-					cout<<"Leader dead\n"// isLeaderAlive : "<<isLeaderAlive<<" electionOnGoing : "<<electionOnGoing<<endl;
+					cout<<"Leader dead\n";// isLeaderAlive : "<<isLeaderAlive<<" electionOnGoing : "<<electionOnGoing<<endl;
 					participantListIterator=participantList.find(createKey(leader->address));
 					if(participantListIterator!=participantList.end())			
 					{
@@ -298,33 +308,33 @@ void *heartBeatThread(void *data)
 					{
 						participantListIterator=participantList.find(createKey(self->address));
 						participantListIterator++;
-						
 						if(participantListIterator==participantList.end())
 						{
+							//threadSleep(2,0);
 							cout<<"Self as leader; No higher process\n";
-							//pthread_mutex_lock(&isLeaderAliveMutex);
+							pthread_mutex_lock(&isLeaderAliveMutex);
 							isLeaderAlive=true;
-							//pthread_mutex_unlock(&isLeaderAliveMutex);
+							pthread_mutex_unlock(&isLeaderAliveMutex);
 							isLeader=true;
-							//pthread_mutex_lock(&electionOnGoingMutex);
+							pthread_mutex_lock(&electionOnGoingMutex);
 							electionOnGoing=false;
-							//pthread_mutex_unlock(&electionOnGoingMutex);
-							//pthread_mutex_lock(&electionBowOutMutex);
+							pthread_mutex_unlock(&electionOnGoingMutex);
+							pthread_mutex_lock(&electionBowOutMutex);
+							cout<<"Setting BoutOut to false : HB1\n";
 							electionBowOut=false;				
-							//pthread_mutex_unlock(&electionBowOutMutex);
+							pthread_mutex_unlock(&electionBowOutMutex);
 							leader=self;
 							multicast(LEADER);
 							sendParticipantList(MULTICAST);							//send participant list to all participants
 							printParticipantList();	
 						}
-						else if(!electionOnGoing)// && self!=leader)
+						else if(!electionOnGoing)
 						{
 							pthread_mutex_lock(&electionMutex);
 							cout<<"Sending a start signal on leader dead\n";
 							pthread_cond_signal(&electionBeginCondition);
 							pthread_mutex_unlock(&electionMutex);
 						}
-						//TODO start election
 						//TODO inform all others
 					}
 				}
@@ -360,7 +370,8 @@ void *networkThread(void *data)
 		else
 		{
 			response[n]=0;
-			//cout<<response<<Endl;
+			if(response[0]=='E')
+				cout<<response<<endl;
 			if(breakDownMsg()==0)
 			{
 				identify();
@@ -464,7 +475,29 @@ int main(int argc, char **argv)
 		selfAddress.sin_family=AF_INET;
 		selfAddress.sin_addr.s_addr=htonl(INADDR_ANY);
 		selfAddress.sin_port=htons(defaultPORT);
-		
+		//find out self public IP and correct the selfAddress to reflect the same
+		FILE *fp;
+		char returnData[64];
+		char ipString[16];
+		fp = popen("/sbin/ifconfig em1", "r");
+
+		while (fgets(returnData, 64, fp) != NULL)
+		{
+			char *start=strstr(returnData,"inet addr");
+			if(start!=NULL)
+			{
+				char *end=strstr((start+10)," ");
+				strncpy(ipString,(start+10),abs(end-(start+10)));
+				ipString[end-(start+10)]='\0';
+				//printf("%s\n",ipString);
+			}
+		}
+		pclose(fp);
+		if(inet_pton(AF_INET,ipString, &(selfAddress.sin_addr))<=0)
+		{
+			printf("Error in inet_pton\n");
+			exit(1);
+		}
 		while((bind(chatSocketFD,(struct sockaddr *)&selfAddress,sizeof(selfAddress))<0))
 		{
 			//cout<<"Error in join client bind\nRetrying...\n";
@@ -497,39 +530,7 @@ int main(int argc, char **argv)
 			printf("Join request Error\n");
 			exit(1);
 		}
-		FILE *fp;
-		char returnData[64];
-		char ipString[16];
-		fp = popen("/sbin/ifconfig em1", "r");
-
-		while (fgets(returnData, 64, fp) != NULL)
-		{
-			char *start=strstr(returnData,"inet addr");
-			if(start!=NULL)
-			{
-				char *end=strstr((start+10)," ");
-				strncpy(ipString,(start+10),abs(end-(start+10)));
-				ipString[end-(start+10)]='\0';
-				//printf("%s\n",ipString);
-			}
-		}
-		pclose(fp);
-		if(inet_pton(AF_INET,ipString, &(selfAddress.sin_addr))<=0)
-		{
-			printf("Error in inet_pton\n");
-			exit(1);
-		}
-		string selfKey(createKey(selfAddress));
-		participantListIterator=participantList.find(selfKey);
-		if(participantListIterator==participantList.end())
-		{
-			cout<<"Error is participant List : Self Node not found\n";
-		}
-		else
-		{
-			self=participantListIterator->second;
-		}
-		isLeader=(self==leader)?true:false;
+		
 		printf("%s joined a new chat on %s, listening on %s:%d\nSuccedded, current users : \nParticipant List - \n",argv[1],argv[2],ipString,defaultPORT);
 		printParticipantList();
 		//printParticipant(leader);
