@@ -14,7 +14,7 @@ struct LastSeen
  	int last_client_seq;
  	vector<int> client_seq_nos;
 };
-
+//contains structs
 //ip of client, client_seq
 map<string, struct LastSeen> hold_back_queue;
 
