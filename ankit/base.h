@@ -82,6 +82,7 @@ std::map <string, bool>::iterator heartBeatMapIterator;						//iterator for hear
 std::map <string, struct participant * > participantList;					//map of key - IP:PORT value - participant struct
 std::map <string, struct participant * >::iterator participantListIterator; 	//iterator for the participant list
 std::map <string, struct participant * >::iterator participantListIterator2; 	//second iterator for the participant list
+std::map <string, struct participant * >::iterator participantListIteratorHB; 	//iterator for the participant list
 std::map <string, bool> ackList;												//map to hold a list of participants who have not acked a message
 std::map <int, struct message * > seqBuffer;								//map to hold messages while deciding sequence number; key - localSeq
 std::map <int, std::set<string> > txBuffer;				//map to hold messages after transmission, for reliability; key - globalSeq
@@ -308,7 +309,7 @@ int multicast(int type)
 		strcat(chatMsg,msg);
 		seqBuffer.insert(make_pair(localSeq,createMessage(chatMsg,localSeq,createKey(selfAddress))));
 		pthread_mutex_unlock(&seqBufferMutex);
-		cout<<"Sending sequence request for : "<<chatMsg<<endl;
+		//cout<<"Sending sequence request for : "<<chatMsg<<endl;
 		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 		{
 			if(sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)

@@ -54,6 +54,7 @@ void identify()
 		case 'C':
 			if(responseTag[0]=='C' && responseTag[1]=='0' && responseTag[2]=='_')
 			{
+				//cout<<"In identify : "<<response<<endl;
 				if(globalSeq==0)
 				{
 					//receiving the first chat message
@@ -64,27 +65,38 @@ void identify()
 				}
 				else
 				{
+					//cout<<"In else : "<<response<<endl;
 					//not the first message; insert the message into the queue
 					holdBackQ.insert(make_pair(atoi(responseGlobalSeq),createMessage(response,atoi(responseLocalSeq),atoi(responseGlobalSeq),createKey(clientAddress))));
 					//check the queue for deliverable messages
 					for(holdBackQIterator=holdBackQ.begin();holdBackQIterator!=holdBackQ.end();holdBackQIterator++)
 					{
-						 if(holdBackQIterator->first ==globalSeq+1)
+						//cout<<"Held msg :"<<holdBackQIterator->first<<":"<<holdBackQIterator->second->content<<endl;
+						if(holdBackQIterator->first == globalSeq+1)
 						{
 							globalSeq=holdBackQIterator->first;
 							participantListIterator=participantList.find(createKey(clientAddress));
-							participantListIterator->second->seqNumber=atoi(responseLocalSeq);
-							cout<<participantListIterator->second->username<<":"<<responseMsg;
+							if(participantListIterator!=participantList.end())
+							{
+								participantListIterator->second->seqNumber=atoi(responseLocalSeq);
+								cout<<participantListIterator->second->username<<":"<<responseMsg;
+							}
+							else
+							{
+								cout<<"Unknown host :"<<responseMsg;
+							}
+							//cout<<createKey(clientAddress)<<":"<<responseMsg;
 						} 
-						else
+						else if(holdBackQIterator->first > globalSeq+1)
 						{
 							//a sequence number is missing; send a request to all for retransmission;
-							cout<<"Sending sequence lost request for global seq : "<<(globalSeq+1)<<endl;
+							//cout<<"Sending sequence lost request for global seq : "<<(globalSeq+1)<<endl;
 							snprintf(msg,1000,"S3_:%d:%d:_",(globalSeq+1),0);
 							if(multicast(SEQUENCELOST)<0)
 							{
 								cout<<"error in sending sequence lost request\n";
 							}
+							break;
 						}
 						//cout<<holdBackQIterator->first<<" : "<<holdBackQIterator->second->content;
 					}
@@ -222,8 +234,8 @@ void identify()
 				{
 					seqBufferIterator->second->globalSeq=(atoi(responseGlobalSeq) > seqBufferIterator->second->globalSeq)?atoi(responseGlobalSeq):seqBufferIterator->second->globalSeq;
 					seqBufferIterator->second->ackCount++;
-					cout<<"received sequence response :"<<response<<"for :";
-					printMessage(seqBufferIterator->second);
+					//cout<<"received sequence response :"<<response<<"for :";
+					//printMessage(seqBufferIterator->second);
 					if(seqBufferIterator->second->ackCount>=participantList.size())
 					{
 						//sequence response received from all participants; send the message now;
@@ -279,7 +291,7 @@ void identify()
 		{
 			if(atoi(responseGlobalSeq)==(globalSeq+1))					//found the sequence which was lost
 			{
-				cout<<"sequenceLost response : "<<responseMsg<<endl;
+				//cout<<"sequenceLost response : "<<responseMsg<<endl;
 				char *second, *third;					//pointers to the data within the message
 				char *ipString = new char[20];
 				char *portString = new char[5];
@@ -302,15 +314,16 @@ void identify()
 				//update clientAddress to reflect the details of the original sender
 				bzero(&clientAddress,sizeof(clientAddress));
 				clientAddress.sin_family=AF_INET;
-				if(inet_pton(AF_INET,ipString, &(selfAddress.sin_addr))<=0)
+				if(inet_pton(AF_INET,ipString, &(clientAddress.sin_addr))<=0)
 				{
-					cout<<"Error in sequence lost response break down - unable to \n";
+					cout<<"Error in sequence lost response break down - unable to get source IP\n";
 				}
 				clientAddress.sin_port=htons(atoi(portString));
 				strcpy(response,third+1);
-				cout<<"original Msg : "<<response<<endl;
-				if(breakDownMsg())
+				//cout<<"original Msg : "<<response<<" from : "<<ipString<<":"<<portString<<endl;
+				if(breakDownMsg()==0)
 				{
+					//cout<<"After breakdown : "<<responseTag<<":"<<responseGlobalSeq<<":"<<responseLocalSeq<<":"<<responseMsg<<endl;
 					identify();
 				}
 				else
@@ -422,28 +435,28 @@ void *heartBeatThread(void *data)
 			multicast(HEARTBEAT);					//send Heart Beat Request to all participants
 			threadSleep(0,20000000L);				//sleeping for 10 mSec
 			//check the responses from all the clients
-			for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+			for(participantListIteratorHB=participantList.begin(); participantListIteratorHB!=participantList.end();participantListIteratorHB++)
 			{
-				if(participantListIterator->second!=leader )//&& participantListIterator->second->isReady)
+				if(participantListIteratorHB->second!=leader )//&& participantListIteratorHB->second->isReady)
 				{
-					//cout<<participantListIterator->second->username<<endl;
+					//cout<<participantListIteratorHB->second->username<<endl;
 					//check if a participant has responded or not
-					if(heartBeatMap.find(participantListIterator->first)==heartBeatMap.end())			
+					if(heartBeatMap.find(participantListIteratorHB->first)==heartBeatMap.end())			
 					{
-						//cout<<participantListIterator->second->username<<endl;
-						responseCountIterator=responseCount.find(participantListIterator->first);
+						//cout<<participantListIteratorHB->second->username<<endl;
+						responseCountIterator=responseCount.find(participantListIteratorHB->first);
 						if(responseCountIterator==responseCount.end())
 						{
-							responseCount.insert(make_pair(participantListIterator->first,1));
+							responseCount.insert(make_pair(participantListIteratorHB->first,1));
 						}
 						else
 						{
 							responseCountIterator->second=responseCountIterator->second+1;
-							cout<<participantListIterator->second->username<<" count - "<<responseCountIterator->second<<endl;
+							cout<<participantListIteratorHB->second->username<<" count - "<<responseCountIterator->second<<endl;
 							if(responseCountIterator->second >=5)
 							{
-								cout<<participantListIterator->second->username<<" is dead\n";
-								participantList.erase(participantListIterator);
+								cout<<participantListIteratorHB->second->username<<" is dead\n";
+								participantList.erase(participantListIteratorHB);
 								responseCount.erase(responseCountIterator);
 								sendParticipantList(MULTICAST);							//send participant list to all participants
 								printParticipantList();	
@@ -465,11 +478,11 @@ void *heartBeatThread(void *data)
 				if(!isLeaderAlive && !electionOnGoing)
 				{
 					cout<<"Leader dead\n";// isLeaderAlive : "<<isLeaderAlive<<" electionOnGoing : "<<electionOnGoing<<endl;
-					participantListIterator=participantList.find(createKey(leader->address));
-					if(participantListIterator!=participantList.end())			
+					participantListIteratorHB=participantList.find(createKey(leader->address));
+					if(participantListIteratorHB!=participantList.end())			
 					{
-						cout<<participantListIterator->second->username<<" is removed\n";
-						participantList.erase(participantListIterator);
+						cout<<participantListIteratorHB->second->username<<" is removed\n";
+						participantList.erase(participantListIteratorHB);
 						printParticipantList();
 					}
 					if(participantList.size()==1)
@@ -479,9 +492,9 @@ void *heartBeatThread(void *data)
 					}
 					else
 					{
-						participantListIterator=participantList.find(createKey(self->address));
-						participantListIterator++;
-						if(participantListIterator==participantList.end())
+						participantListIteratorHB=participantList.find(createKey(self->address));
+						participantListIteratorHB++;
+						if(participantListIteratorHB==participantList.end())
 						{
 							//threadSleep(2,0);
 							cout<<"Self as leader; No higher process\n";
