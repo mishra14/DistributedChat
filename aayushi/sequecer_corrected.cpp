@@ -9,7 +9,7 @@
 
 using namespace std;
 
-int global_seq = 0;
+int globalSeq = 0;
 
 struct LastSeen
 {
@@ -38,7 +38,7 @@ int sequencer(string ip, int client_seq)
 		lastseen.last_client_seq = client_seq;
 		//m_timers.insert(std::pair<std::string,timerInfo>(timerName, timerInfo(GetTime(),0)));
 		hold_back_queue.insert(pair<string, LastSeen>(ip, lastseen));
-		return ++global_seq;
+		return ++globalSeq;
 	}
 
 	else 
@@ -48,7 +48,7 @@ int sequencer(string ip, int client_seq)
 		{//vector corresponding to this IP is empty but this is not the first request
 			cout <<"IP exists but vector empty:"<< ip<< " Previous seen from this IP:" << (itr->second).last_client_seq<< endl;
 			(itr->second).last_client_seq = client_seq;
-			return ++global_seq;
+			return ++globalSeq;
 		}
 
 		else
@@ -65,7 +65,7 @@ int sequencer(string ip, int client_seq)
 			{	
 				(itr->second).last_client_seq = (itr->second).client_seq_nos[0];
 				
-				cout<<"Giving seq no to :" << (itr->second).last_client_seq <<":"<<++global_seq<< endl;;
+				cout<<"Giving seq no to :" << (itr->second).last_client_seq <<":"<<++globalSeq<< endl;;
 				(itr->second).client_seq_nos.erase((itr->second).client_seq_nos.begin());
 
 			}

@@ -472,7 +472,7 @@ void identify()
 				}
 
 				snprintf(msg,1000,"C0_:%d:%d:%s",generatedGlobalSeq, atoi(responseLocalSeq), responseMsg);
-				int n = multicast(SEQUENCED);
+				n = multicast(SEQUENCED);
 				if(n<0)
 				{
 					cout << "Error multicasting chat message to all members"<< endl;
