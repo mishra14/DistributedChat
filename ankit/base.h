@@ -46,11 +46,12 @@ char responseTag[4];
 char responseGlobalSeq[10];
 char responseLocalSeq[10];
 char responseMsg[1000];
+char reliabilityMsg[1000];
 bool isLeader = false, updatingParticipantList = false, isLeaderAlive=true, electionOnGoing=false, electionBowOut=false;
 bool decentralized=false;
 
 
-pthread_t userThreadID,networkThreadID, heartBeatThreadID, electionThreadID;
+pthread_t userThreadID,networkThreadID, heartBeatThreadID, electionThreadID, reliabilityThreadID;
 pthread_mutex_t electionOnGoingMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t electionBowOutMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t isLeaderAliveMutex = PTHREAD_MUTEX_INITIALIZER;	
@@ -59,6 +60,7 @@ pthread_mutex_t txBufferMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t rxBufferMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t holdBackQMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t electionBlockMutex = PTHREAD_MUTEX_INITIALIZER;	
+pthread_mutex_t sharedDataMutex = PTHREAD_MUTEX_INITIALIZER;	
 
 pthread_mutex_t electionMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_cond_t electionBeginCondition = PTHREAD_COND_INITIALIZER;
@@ -77,6 +79,16 @@ struct message
 	int localSeq;
 	int globalSeq;
 	int ackCount;
+};
+
+struct txMessage
+{
+	string content;
+	string senderKey;
+	int localSeq;
+	int globalSeq;
+	int ackCount;
+	std::set <string> ackList;
 };
 
 struct LastSeen
@@ -98,15 +110,22 @@ std::map <string, struct participant * >::iterator participantListIterator2; 	//
 std::map <string, struct participant * >::iterator participantListIteratorHB; 	//iterator for the participant list
 std::map <string, bool> ackList;												//map to hold a list of participants who have not acked a message
 std::map <int, struct message * > seqBuffer;								//map to hold messages while deciding sequence number; key - localSeq
-std::map <int, std::set<string> > txBuffer;								//map to hold messages after transmission, for reliability; key - globalSeq
+std::map <int, struct txMessage * > txBuffer;								//map to hold messages after transmission, for reliability; key - globalSeq
 std::map <string, std::map <int, struct message * > > rxBuffer;				//map to hold messages after receiving; key1 - clientIP:PORT; key2 - localSeq;
 std::map <int, struct message * > holdBackQ;								//map to hold message before delivery; key - GlobalSeq;
 std::map <int, int> globalSeqLost;
+std::map <int, int> txBufferCounter;
+std::map <int, int> seqBufferCounter;
 
+
+std::map <int, int>::iterator txBufferCounterIterator;
+std::map <int, int>::iterator seqBufferCounterIterator;
 std::map <int, int>::iterator globalSeqLostIterator;
 std::map <int, struct message * >::iterator seqBufferIterator;
-std::map <int, std::set<string> >::iterator txBufferIterator;
+std::map <int, struct txMessage * >::iterator txBufferIterator;
+std::map <int, struct txMessage * >::iterator txBufferIteratorHB;
 std::set <string>::iterator ackListIterator;
+std::set <string>::iterator ackListIteratorHB;
 std::map <string, std::map <int, struct message * > > ::iterator rxBufferIterator1;
 std::map <int, struct message * >::iterator rxBufferIterator2;
 std::map <int, struct message * >::iterator holdBackQIterator;
@@ -142,6 +161,17 @@ struct message * createMessage(string content, int localSeq, int globalSeq, stri
 	message ->ackCount=0;
 	message ->senderKey=senderKey;
 	return message;
+}
+
+struct txMessage * createTXMessage(string content, int localSeq, int globalSeq, string senderKey)
+{
+	struct txMessage * txMessage = new struct txMessage;
+	txMessage ->content = content;
+	txMessage ->localSeq=localSeq;
+	txMessage ->globalSeq=globalSeq;
+	txMessage ->ackCount=0;
+	txMessage ->senderKey=senderKey;
+	return txMessage;
 }
 
 struct participant * createParticipant(struct sockaddr_in address, int seqNumber, string name)		//create a participant based on raw data
@@ -339,7 +369,7 @@ int multicast(int type)
 	}
 	else if(type==SEQUENCEDCENTRALIZED)					//chat type message
 	{
-		std::set<string> ackList;
+		struct txMessage * txMessage = createTXMessage(msg, atoi(responseLocalSeq), generatedGlobalSeq, createKey(clientAddress));
 		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 		{
 			if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
@@ -348,16 +378,16 @@ int multicast(int type)
 			}
 			else
 			{
-				ackList.insert(participantListIterator->first);
+				(txMessage->ackList).insert(participantListIterator->first);
 			}
 		}
 		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message to
-		txBuffer.insert(make_pair(generatedGlobalSeq,ackList));
+		txBuffer.insert(make_pair(generatedGlobalSeq,txMessage));
 		cout<<"TX buffer - \n";
 		for(txBufferIterator=txBuffer.begin();txBufferIterator!=txBuffer.end();txBufferIterator++)
 		{
 			cout<<txBufferIterator->first<<":";
-			for(ackListIterator=(txBufferIterator->second).begin();ackListIterator!=(txBufferIterator->second).end();ackListIterator++)
+			for(ackListIterator=(txBufferIterator->second->ackList).begin();ackListIterator!=(txBufferIterator->second->ackList).end();ackListIterator++)
 			{
 				cout<<*ackListIterator<<" ";
 			}
@@ -366,7 +396,7 @@ int multicast(int type)
 	}
 	else if(type==SEQUENCEDDISTRIBUTED)					//chat type message
 	{
-		std::set<string> ackList;
+		struct txMessage * txMessage = createTXMessage(msg, atoi(responseLocalSeq), generatedGlobalSeq, createKey(clientAddress));
 		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 		{
 			if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
@@ -375,12 +405,21 @@ int multicast(int type)
 			}
 			else
 			{
-				ackList.insert(participantListIterator->first);
+				(txMessage->ackList).insert(participantListIterator->first);
 			}
 		}
 		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message to
-		txBuffer.insert(make_pair(atoi(responseGlobalSeq),ackList));
-	}
+		txBuffer.insert(make_pair(generatedGlobalSeq,txMessage));
+		cout<<"TX buffer - \n";
+		for(txBufferIterator=txBuffer.begin();txBufferIterator!=txBuffer.end();txBufferIterator++)
+		{
+			cout<<txBufferIterator->first<<":";
+			for(ackListIterator=(txBufferIterator->second->ackList).begin();ackListIterator!=(txBufferIterator->second->ackList).end();ackListIterator++)
+			{
+				cout<<*ackListIterator<<" ";
+			}
+			cout<<endl;
+		}	}
 	else if(type==SEQUENCELOST)					//chat type message
 	{
 		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
@@ -429,7 +468,7 @@ int breakDownMsg()
 	//cout<<"BreakDown - \n"<<responseTag<<"\n"<<responseGlobalSeq<<"\n"<<responseLocalSeq<<"\n"<<responseMsg<<endl;
 	struct message * tempMessage=createMessage(response, atoi(responseLocalSeq), createKey(clientAddress));
 	tempMessage->globalSeq=atoi(responseGlobalSeq);
-	rxBufferIterator1=rxBuffer.find(createKey(clientAddress));
+	/* rxBufferIterator1=rxBuffer.find(createKey(clientAddress));
 	if(rxBufferIterator1!=rxBuffer.end())
 	{
 		(rxBufferIterator1->second).insert(make_pair(tempMessage->localSeq,tempMessage));
@@ -439,7 +478,7 @@ int breakDownMsg()
 		std::map<int, struct message *> rxBufferInner;
 		rxBufferInner.insert( make_pair(tempMessage->localSeq,tempMessage));
 		rxBuffer.insert(make_pair(createKey(clientAddress),rxBufferInner));
-	}
+	} */
 	return 0;
 }
 

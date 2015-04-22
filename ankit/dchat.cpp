@@ -35,7 +35,7 @@ void identify()
 				receiveParticipantList();
 				printParticipantList();
 			}
-			else if(responseTag[0]=='N' && responseTag[1]=='3' && responseTag[2]=='_')			//respond to a join request
+			else if(responseTag[0]=='N' && responseTag[1]=='3' && responseTag[2]=='_')			//ready message------NOT USED
 			{
 				updatingParticipantList=true;
 				participantListIterator=participantList.find(createKey(clientAddress));
@@ -178,15 +178,24 @@ void identify()
 				txBufferIterator=txBuffer.find(atoi(responseGlobalSeq));
 				if(txBufferIterator!=txBuffer.end())
 				{
-					ackListIterator=(txBufferIterator->second).find(createKey(clientAddress));
-					if(ackListIterator!=(txBufferIterator->second).end())
+					ackListIterator=(txBufferIterator->second->ackList).find(createKey(clientAddress));
+					if(ackListIterator!=(txBufferIterator->second->ackList).end())
 					{
 						//valid ACK; remove clientAddress from the ack list set
-						(txBufferIterator->second).erase(ackListIterator);
+						(txBufferIterator->second->ackList).erase(ackListIterator);
 					}
-					if((txBufferIterator->second).empty())
+					if((txBufferIterator->second->ackList).empty())
 					{
 						//all clients have ACKed the message; remove from txBuffer
+						std::map <int, struct message * >::iterator seqBufferIteratorR;
+						for(seqBufferIteratorR=seqBuffer.begin();seqBufferIteratorR!=seqBuffer.end();seqBufferIteratorR++)
+						{
+							if((seqBufferIteratorR->second->globalSeq) == txBufferIterator->first)
+							{
+								seqBuffer.erase(seqBufferIteratorR);
+								break;
+							}
+						}
 						txBuffer.erase(txBufferIterator);
 					}
 				}
@@ -544,11 +553,104 @@ void threadSleep(int sec, int nSec)					//a method that allows threads to sleep 
 	} 
 }
 
-void *reliabilityThread(void *data)				//TODO
+void *reliabilityThread(void *data)				//thread to check for ACK's and sequence response
 {
 	while(1)
 	{
-		
+		threadSleep(0,50000000L);				//sleeping for 10 mSec
+		//check tx buffer for non received ACK's\n
+		std::map <int, struct txMessage * >::iterator txBufferIteratorR;
+		for(txBufferIteratorR=txBuffer.begin();txBufferIteratorR!=txBuffer.end();txBufferIteratorR++)
+		{
+			txBufferCounterIterator=txBufferCounter.find(txBufferIteratorR->first);
+			if(txBufferCounterIterator!=txBufferCounter.end())
+			{
+				(txBufferCounterIterator->second)++;
+				if(txBufferCounterIterator->second >= 3 && txBufferCounterIterator->second <5)			//this message has not been ACKed in 3 cycles
+				{
+					snprintf(reliabilityMsg,1000,"S3A:%d:%d:%s",txBufferIteratorR->second->globalSeq,txBufferIteratorR->second->localSeq,(txBufferIteratorR->second->content).c_str());
+					//cout<<"reliablity Msg : "<<reliabilityMsg<<endl;
+					//retransmit to the un ACKed client
+					std::set <string>::iterator ackListIteratorR;
+					for(ackListIteratorR=(txBufferIteratorR->second->ackList).begin();ackListIteratorR!=(txBufferIteratorR->second->ackList).end();ackListIteratorR++)
+					{
+						std::map <string, struct participant * >::iterator participantListIteratorR; 	//iterator for the participant list
+						participantListIteratorR=participantList.find(*ackListIteratorR);
+						if(participantListIteratorR!=participantList.end())
+						{
+							if(sendto(chatSocketFD,reliabilityMsg,strlen(reliabilityMsg),0,(struct sockaddr *)&(participantListIteratorR->second->address),sizeof((participantListIteratorR->second->address)))<0)
+							{
+								cout<<"Error in sending retransmission from Reliability thread\n";
+							}
+							else
+							{
+								//cout<<"Reliability msg : "<<reliabilityMsg<<" Sent to  : "<<participantListIteratorR->second->username<<endl;
+							}
+						}
+					}
+				}
+				else if(txBufferCounterIterator->second == 5 )			//this message has not been ACKed in 5 cycles and 2 retransmissions
+				{
+					//remove the message from txBuffer and txBufferCounter
+					if(txBufferIteratorR!=txBuffer.end())
+					{
+						if(txBufferCounterIterator!=txBufferCounter.end())
+						{
+							txBufferCounter.erase(txBufferCounterIterator);
+						}
+						std::map <int, struct message * >::iterator seqBufferIteratorR;
+						for(seqBufferIteratorR=seqBuffer.begin();seqBufferIteratorR!=seqBuffer.end();seqBufferIteratorR++)
+						{
+							if((seqBufferIteratorR->second->globalSeq) == txBufferIteratorR->first)
+							{
+								seqBuffer.erase(seqBufferIteratorR);
+								break;
+							}
+						}
+						txBuffer.erase(txBufferIteratorR);
+					}
+				}
+			}
+			else													//detecting an un ACKed message for the first time
+			{
+				txBufferCounter.insert(make_pair(txBufferIteratorR->first,1));		
+			}
+		}
+		//check seqBuffer for non received sequences
+		std::map <int, struct message * >::iterator seqBufferIteratorR;
+		for(seqBufferIteratorR=seqBuffer.begin();seqBufferIteratorR!=seqBuffer.end();seqBufferIteratorR++)
+		{
+			if(seqBufferIteratorR->second->globalSeq <=0)
+			{
+				//sequence request not answered
+				seqBufferCounterIterator=seqBufferCounter.find(seqBufferIteratorR->first);
+				if(seqBufferCounterIterator!=seqBufferCounter.end())
+				{
+					seqBufferCounterIterator->second++;
+					if((seqBufferCounterIterator->second) % 5 ==0 )
+					{
+						strcpy(msg,(seqBufferIteratorR->second->content).c_str());
+						//retransmit sequence request
+						if(decentralized)
+						{
+							multicast(SEQUENCE);				//send sequence request to sequencer or all participants
+						}
+						else
+						{
+							int n=sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)(&(leader->address)),sizeof(leader->address));
+							while(n<0)
+							{
+								n=sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)(&(leader->address)),sizeof(leader->address));
+							}
+						}
+					}
+				}
+				else
+				{
+					seqBufferCounter.insert(make_pair(seqBufferIteratorR->first,1));
+				}
+			}
+		}
 	}
 }
 
@@ -670,6 +772,19 @@ void *heartBeatThread(void *data)
 								else
 								{
 									cout<<"Error in removing participant from hold_back_queue\n";
+								}
+								for(txBufferIteratorHB=txBuffer.begin();txBufferIteratorHB!=txBuffer.end();txBufferIteratorHB++)
+								{
+									ackListIteratorHB=(txBufferIteratorHB->second->ackList).find(participantListIteratorHB->first);
+									if(ackListIteratorHB!=(txBufferIteratorHB->second->ackList).end())
+									{
+										(txBufferIteratorHB->second->ackList).erase(ackListIteratorHB);
+									}
+									if((txBufferIteratorHB->second->ackList).empty())
+									{
+										//all clients have ACKed the message; remove from txBuffer
+										txBuffer.erase(txBufferIteratorHB);
+									}
 								}
 								participantList.erase(participantListIteratorHB);
 								sendParticipantList(MULTICAST);							//send participant list to all participants
@@ -962,10 +1077,6 @@ int main(int argc, char **argv)
 		//printParticipant(leader);
 	}
 	//updatingParticipantList=false;
-	if(defaultPORT==8672)			//TODO remove this test code
-	{
-		holdBackQ.insert(make_pair(5,createMessage("C0_:5:5:hello\n",5,5,createKey(selfAddress))));
-	}
 	
 	
 	if(pthread_create(&userThreadID,NULL, userThread,NULL))
@@ -975,19 +1086,25 @@ int main(int argc, char **argv)
 	}	
 	if(pthread_create(&networkThreadID,NULL, networkThread,NULL))
 	{
-		printf("Error in creating user thread\n");
+		printf("Error in creating network  thread\n");
 		exit(1);
 	}	
 	if(pthread_create(&heartBeatThreadID,NULL, heartBeatThread,NULL))
 	{
-		printf("Error in creating user thread\n");
+		printf("Error in creating heart beat thread\n");
 		exit(1);
 	}
 	if(pthread_create(&electionThreadID,NULL, electionThread,NULL))
 	{
-		printf("Error in creating user thread\n");
+		printf("Error in creating election thread\n");
 		exit(1);
 	}
+	if(pthread_create(&reliabilityThreadID,NULL, reliabilityThread,NULL))
+	{
+		printf("Error in creating reliability thread\n");
+		exit(1);
+	}
+	
 	if(pthread_join(userThreadID, NULL))
 	{
 		printf("Error joining user thread \n");
@@ -998,11 +1115,15 @@ int main(int argc, char **argv)
 	}
 	if(pthread_join(heartBeatThreadID, NULL))
 	{
-		printf("Error joining network thread \n");
+		printf("Error joining heart beat thread \n");
 	}
 	if(pthread_join(electionThreadID, NULL))
 	{
-		printf("Error joining network thread \n");
+		printf("Error joining election thread \n");
+	}
+	if(pthread_join(reliabilityThreadID, NULL))
+	{
+		printf("Error joining reliability thread \n");
 	}
 	return 0;
 }
