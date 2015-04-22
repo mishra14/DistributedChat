@@ -1,0 +1,25 @@
+1. Chat Cases - 
+
+2. Election Cases - 
+
+basic election - pass
+potential leader dies after send ACK's - 
+
+3. Centralized Sequencer - 
+
+sequencer dies after sending seq ACK - ????
+client dies after requesting seq - pass (sequencer multicasts the sequenced message)
+
+4. Distributed Sequencer - 
+
+sequencer dies after sending seq ACK - (should not be a problem)
+client dies after requesting seq - ?????
+
+5. Heart Beat cases - 
+
+leader faliure detection - pass
+client faliure detection - pass for centralized (not yet done for decentralized)
+
+6. holdBackQ cases - 
+
+a globaSeq is missing - 

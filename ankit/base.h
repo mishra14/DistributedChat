@@ -33,7 +33,7 @@
 
 using namespace std;
 
-int localSeq=0, globalSeq=0, proposedSeq=0, generatedGlobalSeq=0;;
+int localSeq=0, globalSeq=0, proposedSeq=0, generatedGlobalSeq=0;
 int defaultPORT=8672;
 int chatSocketFD, heartBeatSocketFD, electionSocketFD, sequencerSocketFD;
 struct sockaddr_in joinClientAddress, clientAddress, selfAddress;
@@ -82,7 +82,7 @@ struct message
 struct LastSeen
 {
  	int last_client_seq;
- 	vector<int> client_seq_nos;
+ 	map<int, string> client_msgs;
 };
 
 //ip of client, client_seq
@@ -101,13 +101,17 @@ std::map <int, struct message * > seqBuffer;								//map to hold messages while
 std::map <int, std::set<string> > txBuffer;								//map to hold messages after transmission, for reliability; key - globalSeq
 std::map <string, std::map <int, struct message * > > rxBuffer;				//map to hold messages after receiving; key1 - clientIP:PORT; key2 - localSeq;
 std::map <int, struct message * > holdBackQ;								//map to hold message before delivery; key - GlobalSeq;
+std::map <int, int> globalSeqLost;
+
+std::map <int, int>::iterator globalSeqLostIterator;
 std::map <int, struct message * >::iterator seqBufferIterator;
-std::map <int, struct message * >::iterator txBufferIterator;
+std::map <int, std::set<string> >::iterator txBufferIterator;
+std::set <string>::iterator ackListIterator;
 std::map <string, std::map <int, struct message * > > ::iterator rxBufferIterator1;
 std::map <int, struct message * >::iterator rxBufferIterator2;
 std::map <int, struct message * >::iterator holdBackQIterator;
-map<string, struct LastSeen > :: iterator itr;
-map<string, struct LastSeen > :: iterator itr2;
+map<string, struct LastSeen > :: iterator outer_itr;
+map<int, string > :: iterator inner_itr;
 struct message *message;
 struct participant *leader, *self;	
 
@@ -348,7 +352,17 @@ int multicast(int type)
 			}
 		}
 		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message to
-		txBuffer.insert(make_pair(atoi(responseGlobalSeq),ackList));
+		txBuffer.insert(make_pair(generatedGlobalSeq,ackList));
+		cout<<"TX buffer - \n";
+		for(txBufferIterator=txBuffer.begin();txBufferIterator!=txBuffer.end();txBufferIterator++)
+		{
+			cout<<txBufferIterator->first<<":";
+			for(ackListIterator=(txBufferIterator->second).begin();ackListIterator!=(txBufferIterator->second).end();ackListIterator++)
+			{
+				cout<<*ackListIterator<<" ";
+			}
+			cout<<endl;
+		}
 	}
 	else if(type==SEQUENCEDDISTRIBUTED)					//chat type message
 	{
@@ -387,18 +401,21 @@ int breakDownMsg()
 	second=strstr(response,":");
 	if(second==NULL)
 	{
+		cout<<"Error Source : "<<response;
 		cout<<"Error in msg break down - No Tag\n";
 		return 1;
 	}
 	third=strstr(second+1,":");
 	if(third==NULL)
 	{
+		cout<<"Error Source : "<<response;
 		cout<<"Error in msg break down - No Global seq\n";
 		return 1;
 	}
 	fourth=strstr(third+1,":");
 	if(fourth==NULL)
 	{
+		cout<<"Error Source : "<<response;
 		cout<<"Error in msg break down - No Local Seq\n";
 		return 1;
 	}
@@ -567,36 +584,67 @@ void sendParticipantList(int type)
 	}
 }
 
+
+int initializeSequencer()
+{
+	//update the last seen queue for every participant with non zero local sequence numbers
+	int result=0;
+	//clear the last seen queue to ensure no data is present
+	hold_back_queue.clear();
+	for( participantListIterator = participantList.begin(); participantListIterator != participantList.end() ; participantListIterator++)
+	{
+		if(participantListIterator->second->seqNumber > 0)
+		{
+			//a new sequencer was elected. Update lastSeen localSeq from each IP
+			struct LastSeen lastseen;
+			lastseen.last_client_seq = participantListIterator->second->seqNumber;
+			hold_back_queue.insert(make_pair(participantListIterator->first, lastseen));
+		}	
+	}
+	
+	return result;
+}
+
 void sendSequenced()
 {
-	snprintf(msg,1000,"S0A:%d:%d:%s", ++generatedGlobalSeq, atoi(responseLocalSeq), responseMsg);
-	int n=sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
-	if(n<0)
+	if(breakDownMsg()==0)
 	{
-		cout << "Error in sending Global sequence number"<<endl;
-	}
-	snprintf(msg,1000,"C0_:%d:%d:%s:%s",generatedGlobalSeq,atoi(responseLocalSeq),createKey(clientAddress),responseMsg);
-	n = multicast(SEQUENCEDCENTRALIZED);
-	if(n<0)
-	{
-		cout << "Error multicasting chat message to all members"<< endl;
+		snprintf(msg,1000,"S0A:%d:%d:%s", ++generatedGlobalSeq, atoi(responseLocalSeq), responseMsg);
+		int n=sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
+		if(n<0)
+		{
+			cout << "Error in sending Global sequence number"<<endl;
+		}
+		snprintf(msg,1000,"C0_:%d:%d:%s:%s",generatedGlobalSeq,atoi(responseLocalSeq),createKey(clientAddress),responseMsg);
+		n = multicast(SEQUENCEDCENTRALIZED);
+		if(n<0)
+		{
+			cout << "Error multicasting chat message to all members"<< endl;
+		}
+		else
+		{
+		// maintain holdback queue for all broadcast msg
+		}
 	}
 	else
 	{
-	// maintain holdback queue for all broadcast msg
+		cout<<"breakdown error in resequencing : "<<response;
 	}
 }
 
 int sequencer(string key, int client_seq)
 {
+	if(generatedGlobalSeq==0 && globalSeq>0)
+	{
+		generatedGlobalSeq=globalSeq;
+	}
 	struct LastSeen lastseen;
-	itr = hold_back_queue.find(key);
-	itr2 = itr;
-	if(itr == hold_back_queue.end())
+	outer_itr = hold_back_queue.find(key);
+	if(outer_itr == hold_back_queue.end())
 	{
 		// this is the first request from this IP
 		cout << "First req from this IP"<< key<<":"<< "seq:"<< client_seq<< endl;
-		lastseen = itr->second;
+		lastseen = outer_itr->second;
 		lastseen.last_client_seq = client_seq;
 		//m_timers.insert(std::pair<std::string,timerInfo>(timerName, timerInfo(GetTime(),0)));
 		hold_back_queue.insert(pair<string, LastSeen>(key, lastseen));
@@ -605,31 +653,48 @@ int sequencer(string key, int client_seq)
 
 	else 
 	{	
-		lastseen = (itr->second);
-		if((itr->second).client_seq_nos.empty() && (itr->second).last_client_seq == client_seq-1) 
+		if((outer_itr->second).client_msgs.empty() && (outer_itr->second).last_client_seq == client_seq-1) 
 		{//vector corresponding to this IP is empty but this is not the first request
-			cout <<"IP exists but vector empty:"<< key<< " Previous seen from this IP:" << (itr->second).last_client_seq<< endl;
-			(itr->second).last_client_seq = client_seq;
+			cout <<"IP exists but vector empty:"<< key<< " Previous seen from this IP:" << (outer_itr->second).last_client_seq<< endl;
+			(outer_itr->second).last_client_seq = client_seq;
+			
 			sendSequenced();
 		}
 
-		else
+		else			//out of order vector was not empty
 		{	//Out of local sequence number
-			lastseen = itr->second;
 			cout << "Out of seq msg:" << client_seq<< endl;
 			// add last_seq number too?
-			(itr->second).client_seq_nos.push_back(client_seq);
-			hold_back_queue.insert(make_pair(key,(itr->second)));
-			sort((itr->second).client_seq_nos.begin(), (itr->second).client_seq_nos.end());
-			cout << "last seen seq for this ip:"<<(itr->second).last_client_seq<< endl;
+			(outer_itr->second).client_msgs.insert(make_pair(client_seq,response));
+			//(outer_itr->second).client_seq_nos.push_back(client_seq);
+			hold_back_queue.insert(make_pair(key,(outer_itr->second)));
+			//sort((outer_itr->second).client_seq_nos.begin(), (outer_itr->second).client_seq_nos.end());
+			cout << "last seen seq for this ip:"<<(outer_itr->second).last_client_seq<< endl;
+			int missingSeq =((outer_itr->second).last_client_seq)+1;	//missingSeq is the localSeq from that client that you should be receiving
+			inner_itr=((outer_itr->second).client_msgs).begin();
+			while((missingSeq < inner_itr->first) && (inner_itr!=((outer_itr->second).client_msgs).end()) )	//detected an out of order sequence request
+			{
+				//request a retransmission for missingSeq
+				snprintf(msg,1000,"S4_:0:%d:_",missingSeq);
+				if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
+				{
+					cout<<"Error in sending sequence retransmission request\n";
+				}
+				missingSeq++;
+				inner_itr++;			
+			}
 			
-			while((itr->second).last_client_seq == (itr->second).client_seq_nos[0]-1)
-			{	
-				(itr->second).last_client_seq = (itr->second).client_seq_nos[0];
-				
-				cout<<"Giving seq no to :" << (itr->second).last_client_seq << endl;
-				sendSequenced();
-				(itr->second).client_seq_nos.erase((itr->second).client_seq_nos.begin());
+			for(inner_itr=((outer_itr->second).client_msgs).begin(); inner_itr!=((outer_itr->second).client_msgs).end();inner_itr++)
+			{
+				if((outer_itr->second).last_client_seq == (inner_itr->first)-1)
+				{	
+					(outer_itr->second).last_client_seq = inner_itr->first;
+					
+					cout<<"Giving seq no to :" << (outer_itr->second).last_client_seq <<":"<<(inner_itr->second).c_str()<< endl;
+					strcpy(response, (inner_itr->second).c_str());
+					sendSequenced();
+					((outer_itr->second).client_msgs).erase(inner_itr);
+				}
 			}
 		}
 	}
