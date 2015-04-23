@@ -7,7 +7,22 @@ void identify()
 		case 'N':
 			if(responseTag[0]=='N' && responseTag[1]=='0' && responseTag[2]=='_')			//respond to a join request
 			{
-				updatingParticipantList=true;
+				if(!decentralized)
+				{
+					//forward request to leader
+					pthread_mutex_lock(&seqBufferMutex);
+					localSeq++;
+					snprintf(msg,1000,"S0_:0:%d:%s:%s",localSeq,createKey(clientAddress),response);
+					seqBuffer.insert(make_pair(localSeq,createMessage(msg,localSeq,createKey(selfAddress))));
+					pthread_mutex_unlock(&seqBufferMutex);
+					//cout<<"Sending sequence request for : "<<msg<<endl;
+					int n=sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)(&(leader->address)),sizeof(leader->address));
+					while(n<0)
+					{
+						n=sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)(&(leader->address)),sizeof(leader->address));
+					}
+				}
+				/* updatingParticipantList=true;
 				//add requester to participant list
 				string newJoineeKey(createKey(clientAddress));
 				struct participant *newJoinee=createParticipant(clientAddress,0, responseMsg);
@@ -28,16 +43,19 @@ void identify()
 					//print updated list
 					printParticipantList();
 				}
-				updatingParticipantList=false;
+				updatingParticipantList=false; */
 			}
 			else if(response[0]=='N' && response[1]=='0' && response[2]=='A')
 			{
+				notificationGlobalSeq=(notificationGlobalSeq<atoi(responseGlobalSeq))?atoi(responseGlobalSeq):notificationGlobalSeq;
+				cout<<"NOTICE : change in participant list\n";
 				receiveParticipantList();
 				printParticipantList();
 			}
 			else if(responseTag[0]=='N' && responseTag[1]=='3' && responseTag[2]=='_')			//ready message------NOT USED
 			{
 				updatingParticipantList=true;
+				pthread_mutex_lock(&participantListMutex);
 				participantListIterator=participantList.find(createKey(clientAddress));
 				if(participantListIterator==participantList.end())
 				{
@@ -48,7 +66,13 @@ void identify()
 					//participantListIterator->second->isReady=true;
 					cout<<participantListIterator->second->username<<" is Ready\n";
 				}
+				pthread_mutex_unlock(&participantListMutex);
 				updatingParticipantList=false;
+			}
+			else if(responseTag[0]=='N' && responseTag[1]=='1' && responseTag[2]=='_')			//respond to a join request
+			{
+				receiveParticipantList();
+				printParticipantList();
 			}
 		break;
 		case 'C':
@@ -104,7 +128,7 @@ void identify()
 				}
 				else
 				{
-					if(defaultPORT!=8674)
+					//if(defaultPORT!=8674)
 					{
 						//send to sequencer
 						if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&(leader->address),sizeof((leader->address)))<0)
@@ -117,29 +141,36 @@ void identify()
 				//cout<<"In identify : "<<response<<endl;
 				if(globalSeq==0)
 				{
-					holdBackQ.insert(make_pair(atoi(responseGlobalSeq),createMessage(response,atoi(responseLocalSeq),atoi(responseGlobalSeq),createKey(clientAddress))));
 					//receiving the first chat message
+					pthread_mutex_lock(&holdBackQMutex);
+					holdBackQ.insert(make_pair(atoi(responseGlobalSeq),createMessage(response,atoi(responseLocalSeq),atoi(responseGlobalSeq),createKey(clientAddress))));
+					pthread_mutex_unlock(&holdBackQMutex);
 					globalSeq=atoi(responseGlobalSeq);
+					pthread_mutex_lock(&participantListMutex);
 					participantListIterator=participantList.find(createKey(clientAddress));
 					participantListIterator->second->seqNumber=atoi(responseLocalSeq);
+					pthread_mutex_unlock(&participantListMutex);
 					cout<<participantListIterator->second->username<<":"<<atoi(responseGlobalSeq)<<":"<<responseMsg;
 				}
 				else
 				{
 					//cout<<"In else : "<<response<<endl;
 					//not the first message; insert the message into the queue
+					pthread_mutex_lock(&holdBackQMutex);
 					holdBackQ.insert(make_pair(atoi(responseGlobalSeq),createMessage(response,atoi(responseLocalSeq),atoi(responseGlobalSeq),createKey(clientAddress))));
+					pthread_mutex_unlock(&holdBackQMutex);
 					//check the queue for deliverable messages
-					/* cout<<"Hold back Queue - "<<endl;
+					/*  cout<<"Hold back Queue - "<<endl;
 					for(holdBackQIterator=holdBackQ.begin();holdBackQIterator!=holdBackQ.end();holdBackQIterator++)
 					{
 						cout<<holdBackQIterator->first<<":"<<participantList.find(holdBackQIterator->second->senderKey)->second->username<<":"<<holdBackQIterator->second->content;
 					}
-					cout<<"Searching for  : "<<globalSeq<<endl; */
+					cout<<"Searching for  : "<<globalSeq<<endl;  */
 					for(holdBackQIterator=holdBackQ.find(globalSeq);holdBackQIterator!=holdBackQ.end();holdBackQIterator++)
 					{
+						//cout<<holdBackQIterator->first<<":"<<participantList.find(holdBackQIterator->second->senderKey)->second->username<<":"<<holdBackQIterator->second->content;
 						//cout<<"Held msg :"<<holdBackQIterator->first<<":"<<holdBackQIterator->second->content<<endl;
-						if(holdBackQIterator->first == globalSeq+1)
+						if(holdBackQIterator->first == globalSeq+1 || (holdBackQIterator->first == notificationGlobalSeq+1 && holdBackQIterator->first > globalSeq+1))
 						{
 							globalSeq=holdBackQIterator->first;
 							participantListIterator=participantList.find(holdBackQIterator->second->senderKey);
@@ -147,8 +178,13 @@ void identify()
 							{
 								strcpy(response,(holdBackQIterator->second->content).c_str());
 								breakDownMsg();
+								pthread_mutex_lock(&participantListMutex);
 								participantListIterator->second->seqNumber=atoi(responseLocalSeq);
+								pthread_mutex_unlock(&participantListMutex);
 								cout<<participantListIterator->second->username<<":"<<atoi(responseGlobalSeq)<<":"<<atoi(responseLocalSeq)<<":"<<responseMsg;
+								/* pthread_mutex_lock(&holdBackQMutex);
+								holdBackQ.erase(holdBackQIterator);
+								pthread_mutex_unlock(&holdBackQMutex); */
 							}
 							else
 							{
@@ -156,8 +192,9 @@ void identify()
 							}
 							//cout<<createKey(clientAddress)<<":"<<responseMsg;
 						} 
-						else if(holdBackQIterator->first > globalSeq+1)
+						else if(holdBackQIterator->first > globalSeq+1 && holdBackQIterator->first > notificationGlobalSeq+1 )
 						{
+							//cout<<"globalSeq : "<<globalSeq<<" notificationGlobalSeq : "<<notificationGlobalSeq<<endl;
 							//a sequence number is missing; send a request to all for retransmission;
 							cout<<"Sending sequence lost request for global seq : "<<(globalSeq+1)<<endl;
 							globalSeqLost.insert(make_pair(globalSeq+1,0));
@@ -168,6 +205,11 @@ void identify()
 							}
 							break;
 						}
+						/* else
+						{
+							cout<<"globalSeq : "<<globalSeq<<" notificationGlobalSeq : "<<notificationGlobalSeq<<endl;
+							cout<<"Else Case : "<<holdBackQIterator->first<<" "<<holdBackQIterator->second->content;
+						} */
 						//cout<<holdBackQIterator->first<<" : "<<holdBackQIterator->second->content;
 					}
 					//cout<<endl;
@@ -176,6 +218,7 @@ void identify()
 			if(responseTag[0]=='C' && responseTag[1]=='0' && responseTag[2]=='A')				//chat msg ACK
 			{
 				txBufferIterator=txBuffer.find(atoi(responseGlobalSeq));
+				pthread_mutex_lock(&txBufferMutex);
 				if(txBufferIterator!=txBuffer.end())
 				{
 					ackListIterator=(txBufferIterator->second->ackList).find(createKey(clientAddress));
@@ -192,6 +235,7 @@ void identify()
 						{
 							if((seqBufferIteratorR->second->globalSeq) == txBufferIterator->first)
 							{
+								//cout<<"Erasing from SeqBuffer : "<<seqBufferIteratorR->second->content;
 								seqBuffer.erase(seqBufferIteratorR);
 								break;
 							}
@@ -199,6 +243,7 @@ void identify()
 						txBuffer.erase(txBufferIterator);
 					}
 				}
+				pthread_mutex_unlock(&txBufferMutex);
 			}
 		break;
 		case 'H':
@@ -304,6 +349,7 @@ void identify()
 		case 'S':
 		if(responseTag[0]=='S' && responseTag[1]=='0' && responseTag[2]=='_')				//only for centralized sequencer
 		{	
+			//cout<<"Sequencing  : "<<response<<endl;
 			//send ack to the requester indicating the request has been received
 			sequencer(createKey(clientAddress), atoi(responseLocalSeq));
 			/* snprintf(msg,1000,"S0A:%d:%d:%s", generatedGlobalSeq, atoi(responseLocalSeq), responseMsg);
@@ -328,7 +374,7 @@ void identify()
 		}			
 		else if(responseTag[0]=='S' && responseTag[1]=='0' && responseTag[2]=='A')				//only for centralized sequencer
 		{	
-			cout<<"Sequence response : "<<response;
+			//cout<<"Sequence response : "<<response;
 			seqBufferIterator=seqBuffer.find(atoi(responseLocalSeq));
 			if(seqBufferIterator!=seqBuffer.end())
 			{
@@ -396,6 +442,7 @@ void identify()
 		}
 		else if(responseTag[0]=='S' && responseTag[1]=='3' && responseTag[2]=='_')			//sequence lost request 
 		{
+			cout<<"Searching for : "<<responseGlobalSeq<<endl;
 			//check in hold back queue
 			holdBackQIterator=holdBackQ.find(atoi(responseGlobalSeq));
 			if(holdBackQIterator!=holdBackQ.end())
@@ -407,6 +454,7 @@ void identify()
 					cout<<"error in sequence lost response generation breakdown"<<endl;
 				}
 				snprintf(msg,1000,"S3A:%d:%d:%s:%d:%d:%s:%s",holdBackQIterator->second->globalSeq,holdBackQIterator->second->localSeq,responseTag,holdBackQIterator->second->globalSeq,holdBackQIterator->second->localSeq,(holdBackQIterator->second->senderKey).c_str(),responseMsg);
+				cout<<"Searching for : "<<responseGlobalSeq<<"\nFound in holdBackQ; Responding : "<<holdBackQIterator->second->content;
 				if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
 				{
 					cout<<"Error in sending sequence lost response : found in holdBack\n";
@@ -418,8 +466,14 @@ void identify()
 				seqBufferIterator=seqBuffer.find(atoi(responseGlobalSeq));
 				if(seqBufferIterator!=seqBuffer.end())
 				{
+					strcpy(response,(seqBufferIterator->second->content).c_str());
+					if (breakDownMsg()!=0)
+					{
+						cout<<"error in sequence lost response generation breakdown"<<endl;
+					}
 					//found the message; send back to the requester
 					snprintf(msg,1000,"S3A:%d:%d:%s:%d:%d:%s:%s",seqBufferIterator->second->globalSeq,seqBufferIterator->second->localSeq,responseTag,seqBufferIterator->second->globalSeq,seqBufferIterator->second->localSeq,(seqBufferIterator->second->senderKey).c_str(),responseMsg);
+					cout<<"Searching for : "<<responseGlobalSeq<<"\nFound in seqBuffer; Responding : "<<msg;
 					if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
 					{
 						cout<<"Error in sending sequence lost response : found in seqBuffer\n";
@@ -427,6 +481,7 @@ void identify()
 				}
 				else
 				{
+					cout<<"Searching for : "<<responseGlobalSeq<<"\nNot found; Responding\n";
 					snprintf(msg,1000,"S3N:%d:%d:_",atoi(responseGlobalSeq),atoi(responseLocalSeq));
 					if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
 					{
@@ -491,7 +546,7 @@ void identify()
 				
 			}
 		}
-		else if(responseTag[0]=='S' && responseTag[1]=='4' && responseTag[2]=='N')	//sequence not found by someone;
+		else if(responseTag[0]=='S' && responseTag[1]=='3' && responseTag[2]=='N')	//sequence not found by someone;
 		{
 			globalSeqLostIterator=globalSeqLost.find(atoi(responseGlobalSeq));
 			if(globalSeqLostIterator!=globalSeqLost.end())
@@ -500,10 +555,11 @@ void identify()
 				if(globalSeqLostIterator->second >= participantList.size())
 				{	
 					cout<<"**********************************************\n";
-					cout<<"Message with globalSeq = "<<globalSeqLostIterator->second<<" lost forever :(\n";
+					cout<<"Message with globalSeq = "<<globalSeqLostIterator->first<<" lost forever :(\n";
 					cout<<"**********************************************\n";
 					//NACK's from n or more participants; assuming message to be lost forever;
-					globalSeq=globalSeqLostIterator->first;
+					globalSeq=globalSeqLostIterator->first+1;
+					cout<<globalSeq<<" "<<globalSeqLostIterator->first<<endl;
 					globalSeqLost.erase(globalSeqLostIterator);
 				}
 			}
@@ -528,13 +584,15 @@ void identify()
 				}
 			}
 		}
-		else if(responseTag[0]=='S' && responseTag[1]=='4' && responseTag[2]=='_')	//sequence request was lost; sequencer has requested re transmission
+		else if(responseTag[0]=='S' && responseTag[1]=='4' && responseTag[2]=='A')	//sequence request was lost; sequencer has requested re transmission
 		{
 			//update the hold_back_queue to forget about that message; it is lost forever. FOREVER !!
 			outer_itr = hold_back_queue.find(createKey(clientAddress));
 			if(outer_itr!=hold_back_queue.end())
 			{
+				pthread_mutex_lock(&hold_back_queueMutex);
 				(outer_itr->second).last_client_seq=(outer_itr->second).last_client_seq<atoi(responseLocalSeq)?atoi(responseLocalSeq):(outer_itr->second).last_client_seq;
+				pthread_mutex_unlock(&hold_back_queueMutex);
 			}
 		}
 		break;
@@ -594,6 +652,7 @@ void *reliabilityThread(void *data)				//thread to check for ACK's and sequence 
 					//remove the message from txBuffer and txBufferCounter
 					if(txBufferIteratorR!=txBuffer.end())
 					{
+						pthread_mutex_lock(&txBufferMutex);
 						if(txBufferCounterIterator!=txBufferCounter.end())
 						{
 							txBufferCounter.erase(txBufferCounterIterator);
@@ -608,6 +667,7 @@ void *reliabilityThread(void *data)				//thread to check for ACK's and sequence 
 							}
 						}
 						txBuffer.erase(txBufferIteratorR);
+						pthread_mutex_unlock(&txBufferMutex);
 					}
 				}
 			}
@@ -734,12 +794,13 @@ void *heartBeatThread(void *data)
 			threadSleep(0,20000000L);				//sleeping for 10 mSec
 			//check the responses from all the clients
 			for(participantListIteratorHB=participantList.begin(); participantListIteratorHB!=participantList.end();participantListIteratorHB++)
-			{
-				if(leader==NULL)
+			{ 
+				if(leader==NULL || participantListIteratorHB==participantList.end() || participantListIteratorHB->second==NULL)
 				{
 					cout<<"breaking on null leader\n";
 					continue;
 				}
+
 				if(participantListIteratorHB->second!=leader )//&& participantListIteratorHB->second->isReady)
 				{
 					//cout<<participantListIteratorHB->second->username<<endl;
@@ -767,7 +828,9 @@ void *heartBeatThread(void *data)
 								if(hold_back_queue.find(participantListIteratorHB->first)!=hold_back_queue.end())
 								{
 									cout<<"Erasing "<<(participantListIteratorHB->first)<<endl;
+									pthread_mutex_lock(&hold_back_queueMutex);
 									hold_back_queue.erase((participantListIteratorHB->first));
+									pthread_mutex_unlock(&hold_back_queueMutex);
 								}
 								else
 								{
@@ -775,6 +838,7 @@ void *heartBeatThread(void *data)
 								}
 								for(txBufferIteratorHB=txBuffer.begin();txBufferIteratorHB!=txBuffer.end();txBufferIteratorHB++)
 								{
+									pthread_mutex_lock(&txBufferMutex);
 									ackListIteratorHB=(txBufferIteratorHB->second->ackList).find(participantListIteratorHB->first);
 									if(ackListIteratorHB!=(txBufferIteratorHB->second->ackList).end())
 									{
@@ -785,8 +849,11 @@ void *heartBeatThread(void *data)
 										//all clients have ACKed the message; remove from txBuffer
 										txBuffer.erase(txBufferIteratorHB);
 									}
+									pthread_mutex_unlock(&txBufferMutex);
 								}
+								pthread_mutex_lock(&participantListMutex);
 								participantList.erase(participantListIteratorHB);
+								pthread_mutex_unlock(&participantListMutex);
 								sendParticipantList(MULTICAST);							//send participant list to all participants
 								printParticipantList();	
 							}
@@ -811,13 +878,29 @@ void *heartBeatThread(void *data)
 					if(participantListIteratorHB!=participantList.end())			
 					{
 						cout<<participantListIteratorHB->second->username<<" is removed\n";
+						pthread_mutex_lock(&participantListMutex);
 						participantList.erase(participantListIteratorHB);
-						printParticipantList();
+						pthread_mutex_unlock(&participantListMutex);
 					}
 					if(participantList.size()==1)
 					{
-						leader=self;
+						cout<<"Self as leader; No higher process\n";
+						pthread_mutex_lock(&isLeaderAliveMutex);
+						isLeaderAlive=true;
+						pthread_mutex_unlock(&isLeaderAliveMutex);
 						isLeader=true;
+						pthread_mutex_lock(&electionOnGoingMutex);
+						electionOnGoing=false;
+						pthread_mutex_unlock(&electionOnGoingMutex);
+						pthread_mutex_lock(&electionBowOutMutex);
+						cout<<"Setting BoutOut to false : HB1\n";
+						electionBowOut=false;				
+						pthread_mutex_unlock(&electionBowOutMutex);
+						leader=self;
+						initializeSequencer();
+						multicast(LEADER);
+						sendParticipantList(MULTICAST);							//send participant list to all participants
+						printParticipantList();
 					}
 					else
 					{
@@ -875,13 +958,12 @@ void *userThread(void *data)
 			pthread_mutex_lock(&seqBufferMutex);
 			localSeq++;
 			chatMsg[0]='\0';
-			snprintf(chatMsg,1000,"S0_:0:%d:",localSeq);
-			strcat(chatMsg,msg);
+			snprintf(chatMsg,1000,"S0_:0:%d:%s:C0_:0:%d:%s",localSeq,createKey(selfAddress),localSeq,msg);
 			seqBuffer.insert(make_pair(localSeq,createMessage(chatMsg,localSeq,createKey(selfAddress))));
 			pthread_mutex_unlock(&seqBufferMutex);
-			//cout<<"Sending sequence request for : "<<chatMsg<<endl;
-			if(localSeq!=2 || defaultPORT!=8673)
+			if(localSeq!=3 || defaultPORT!=8673)
 			{
+				//cout<<"Sending sequence request for : "<<chatMsg<<endl;
 				int n=sendto(chatSocketFD,chatMsg,strlen(chatMsg),0,(struct sockaddr *)(&(leader->address)),sizeof(leader->address));
 				while(n<0)
 				{
@@ -911,8 +993,8 @@ void *networkThread(void *data)
 		else
 		{
 			response[n]=0;
-			if(response[0]=='E')
-				cout<<response<<endl;
+			//if(response[0]=='S')
+				//cout<<response<<endl;
 			if(breakDownMsg()==0)
 			{
 				identify();
@@ -1044,18 +1126,20 @@ int main(int argc, char **argv)
 			//cout<<"Error in join client bind\nRetrying...\n";
 			selfAddress.sin_port=htons(++defaultPORT);
 		}
-		snprintf(msg,1000,"N0_:0:0:%s",argv[1]);
+		snprintf(msg,1000,"N0_:0:%d:%s",++localSeq,argv[1]);
 		if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&joinClientAddress,sizeof(joinClientAddress))<0)
 		{
 			printf("error in sending join request\n");
 			exit(1);
 		}
-		n=recvfrom(chatSocketFD,response,1000,0,NULL,NULL);
+		socklen_t len=sizeof(clientAddress);
+		n=recvfrom(chatSocketFD,response,1000,0,(struct sockaddr *)&clientAddress,&len);
 		if(n<0)
 		{
 			printf("Error in receiving Join confirmation");
 			exit(1);
 		}
+		cout<<"response : "<<response<<"\nFrom : "<<createKey(clientAddress)<<endl;
 		if(response[0]=='N' && response[1]=='0' && response[2]=='N')
 		{
 			printf("Join request Denied\n");
@@ -1099,10 +1183,10 @@ int main(int argc, char **argv)
 		printf("Error in creating election thread\n");
 		exit(1);
 	}
-	if(pthread_create(&reliabilityThreadID,NULL, reliabilityThread,NULL))
+	//if(pthread_create(&reliabilityThreadID,NULL, reliabilityThread,NULL))
 	{
 		printf("Error in creating reliability thread\n");
-		exit(1);
+		//exit(1);
 	}
 	
 	if(pthread_join(userThreadID, NULL))
@@ -1121,7 +1205,7 @@ int main(int argc, char **argv)
 	{
 		printf("Error joining election thread \n");
 	}
-	if(pthread_join(reliabilityThreadID, NULL))
+	//if(pthread_join(reliabilityThreadID, NULL))
 	{
 		printf("Error joining reliability thread \n");
 	}

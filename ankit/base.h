@@ -33,7 +33,7 @@
 
 using namespace std;
 
-int localSeq=0, globalSeq=0, proposedSeq=0, generatedGlobalSeq=0;
+int localSeq=0, globalSeq=0, proposedSeq=0, generatedGlobalSeq=0, notificationGlobalSeq=0;;
 int defaultPORT=8672;
 int chatSocketFD, heartBeatSocketFD, electionSocketFD, sequencerSocketFD;
 struct sockaddr_in joinClientAddress, clientAddress, selfAddress;
@@ -51,7 +51,7 @@ bool isLeader = false, updatingParticipantList = false, isLeaderAlive=true, elec
 bool decentralized=false;
 
 
-pthread_t userThreadID,networkThreadID, heartBeatThreadID, electionThreadID, reliabilityThreadID;
+pthread_t userThreadID , networkThreadID, heartBeatThreadID, electionThreadID, reliabilityThreadID;
 pthread_mutex_t electionOnGoingMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t electionBowOutMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t isLeaderAliveMutex = PTHREAD_MUTEX_INITIALIZER;	
@@ -59,8 +59,11 @@ pthread_mutex_t seqBufferMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t txBufferMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t rxBufferMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t holdBackQMutex = PTHREAD_MUTEX_INITIALIZER;	
+pthread_mutex_t hold_back_queueMutex = PTHREAD_MUTEX_INITIALIZER;	
+
 pthread_mutex_t electionBlockMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_mutex_t sharedDataMutex = PTHREAD_MUTEX_INITIALIZER;	
+pthread_mutex_t participantListMutex = PTHREAD_MUTEX_INITIALIZER;
 
 pthread_mutex_t electionMutex = PTHREAD_MUTEX_INITIALIZER;	
 pthread_cond_t electionBeginCondition = PTHREAD_COND_INITIALIZER;
@@ -370,20 +373,23 @@ int multicast(int type)
 	else if(type==SEQUENCEDCENTRALIZED)					//chat type message
 	{
 		struct txMessage * txMessage = createTXMessage(msg, atoi(responseLocalSeq), generatedGlobalSeq, createKey(clientAddress));
-		for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
+		std::map <string, struct participant * >::iterator participantListIterator3; 	//second iterator for the participant list
+		for(participantListIterator3=participantList.begin(); participantListIterator3!=participantList.end();participantListIterator3++)
 		{
-			if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&((participantListIterator->second)->address),sizeof((participantListIterator->second)->address))<0)
+			if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&((participantListIterator3->second)->address),sizeof((participantListIterator3->second)->address))<0)
 			{
 				result=-1;
 			}
 			else
 			{
-				(txMessage->ackList).insert(participantListIterator->first);
+				(txMessage->ackList).insert(participantListIterator3->first);
 			}
 		}
 		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message to
+		pthread_mutex_lock(&txBufferMutex);
 		txBuffer.insert(make_pair(generatedGlobalSeq,txMessage));
-		cout<<"TX buffer - \n";
+		pthread_mutex_unlock(&txBufferMutex);
+		/* cout<<"TX buffer - \n";
 		for(txBufferIterator=txBuffer.begin();txBufferIterator!=txBuffer.end();txBufferIterator++)
 		{
 			cout<<txBufferIterator->first<<":";
@@ -392,7 +398,7 @@ int multicast(int type)
 				cout<<*ackListIterator<<" ";
 			}
 			cout<<endl;
-		}
+		} */ 
 	}
 	else if(type==SEQUENCEDDISTRIBUTED)					//chat type message
 	{
@@ -408,8 +414,10 @@ int multicast(int type)
 				(txMessage->ackList).insert(participantListIterator->first);
 			}
 		}
-		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message to
+		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message too
+		pthread_mutex_lock(&txBufferMutex);
 		txBuffer.insert(make_pair(generatedGlobalSeq,txMessage));
+		pthread_mutex_unlock(&txBufferMutex);
 		cout<<"TX buffer - \n";
 		for(txBufferIterator=txBuffer.begin();txBufferIterator!=txBuffer.end();txBufferIterator++)
 		{
@@ -432,6 +440,40 @@ int multicast(int type)
 		//insert the msg into txBuffer to check for ACK's; key=globalSeq, value=list of IP's that were sent the message to
 	}
 	return result;
+}
+
+void extractSender(char *ipString, char * portString)
+{
+	char *second, *third;					//pointers to the data within the message
+
+	second=strstr(responseMsg,":");
+	if(second==NULL)
+	{
+		cout<<"	Error in sequenced chat message break down - No port\n";
+		cout<<responseMsg;
+		return ;
+	}
+	third=strstr(second+1,":");
+	if(third==NULL)
+	{
+		cout<<"Error in sequenced chat message break down - No message\n";
+		cout<<responseMsg;
+		return ;
+	}
+	strncpy(ipString,responseMsg,(second-responseMsg));
+	ipString[second-responseMsg]='\0';
+	strncpy(portString,second+1,(third-second-1));
+	portString[third-second-1]='\0';
+	strcpy(responseMsg,third+1);
+	//update clientAddress to reflect the details of the original sender
+	bzero(&clientAddress,sizeof(clientAddress));
+	clientAddress.sin_family=AF_INET;
+	if(inet_pton(AF_INET,ipString, &(clientAddress.sin_addr))<=0)
+	{
+		cout<<"Error in sequence lost response break down - unable to get source IP\n";
+	}
+	clientAddress.sin_port=htons(atoi(portString));
+	//cout<<"original Msg : "<<response<<" from : "<<ipString<<":"<<portString<<endl;
 }
 
 int breakDownMsg()
@@ -494,6 +536,7 @@ void receiveParticipantList()
 	}
 	else
 	{
+		pthread_mutex_lock(&participantListMutex);
 		participantList.clear();
 		for(int i=0;i<participantCount;i++)
 		{
@@ -576,6 +619,7 @@ void receiveParticipantList()
 		//printParticipant(self);
 		isLeader=(self==leader)?true:false;
 		//printParticipantList();
+		pthread_mutex_unlock(&participantListMutex);
 	}
 }
 
@@ -583,6 +627,8 @@ void sendParticipantList(int type)
 {
 	if(type==MULTICAST)						//send the whole list to everyone
 	{
+		notificationGlobalSeq=++generatedGlobalSeq;
+		cout<<"generatedGlobalSeq : "<<generatedGlobalSeq<<"\tNotification globalSeq : "<<notificationGlobalSeq<<endl;
 		cout<<"Sending new list to ";
 		for(participantListIterator2=participantList.begin(); participantListIterator2!=participantList.end();participantListIterator2++)
 		{
@@ -590,7 +636,7 @@ void sendParticipantList(int type)
 			{
 				cout<<participantListIterator2->second->username<<", ";
 				clientAddress=participantListIterator2->second->address;
-				snprintf(msg,1000,"N0A:0:0:%d",participantList.size());
+				snprintf(msg,1000,"N0A:%d:0:%d",generatedGlobalSeq,participantList.size());
 				sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress));
 				for(participantListIterator=participantList.begin(); participantListIterator!=participantList.end();participantListIterator++)
 				{
@@ -629,6 +675,13 @@ int initializeSequencer()
 	//update the last seen queue for every participant with non zero local sequence numbers
 	int result=0;
 	//clear the last seen queue to ensure no data is present
+	if(generatedGlobalSeq==0 && globalSeq>0)
+	{
+		
+		generatedGlobalSeq=globalSeq;
+		cout<<"updating generating Sequence number to  - "<<generatedGlobalSeq<<endl;
+	}
+	pthread_mutex_lock(&hold_back_queueMutex);
 	hold_back_queue.clear();
 	for( participantListIterator = participantList.begin(); participantListIterator != participantList.end() ; participantListIterator++)
 	{
@@ -640,9 +693,11 @@ int initializeSequencer()
 			hold_back_queue.insert(make_pair(participantListIterator->first, lastseen));
 		}	
 	}
+	pthread_mutex_unlock(&hold_back_queueMutex);
 	
 	return result;
 }
+
 
 void sendSequenced()
 {
@@ -654,15 +709,51 @@ void sendSequenced()
 		{
 			cout << "Error in sending Global sequence number"<<endl;
 		}
-		snprintf(msg,1000,"C0_:%d:%d:%s:%s",generatedGlobalSeq,atoi(responseLocalSeq),createKey(clientAddress),responseMsg);
-		n = multicast(SEQUENCEDCENTRALIZED);
+		char *ipString = new char[20];
+		char *portString = new char[5];
+		extractSender(ipString,portString);
+		strcpy(response,responseMsg);
+		breakDownMsg();
+		if(strcmp(responseTag,"N0_")==0)
+		{
+			updatingParticipantList=true;
+			pthread_mutex_lock(&participantListMutex);
+			//add requester to participant list
+			string newJoineeKey(createKey(clientAddress));
+			struct participant *newJoinee=createParticipant(clientAddress,0, responseMsg);
+			participantList.insert(make_pair(newJoineeKey,newJoinee));
+			if(participantList.find(newJoineeKey)==participantList.end())
+			{
+				cout<<"participant not inserted\n";
+				strcpy(msg,"N0N");
+				if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
+				{
+					cout<<"Error in sending join NACK\n";
+				}
+			}
+			else
+			{
+				//send an ACK with expectant paricipant list size
+				sendParticipantList(MULTICAST);							//send participant list to all participants
+				//print updated list
+				printParticipantList();
+			}
+			pthread_mutex_unlock(&participantListMutex);
+			updatingParticipantList=false; 
+		}
+		else
+		{
+			snprintf(msg,1000,"%s:%d:%d:%s:%s",responseTag,generatedGlobalSeq,atoi(responseLocalSeq),createKey(clientAddress),responseMsg);
+			//cout<<"Multicasting  : "<<msg<<"\nFrom  : "<<responseMsg<<endl;	
+			n = multicast(SEQUENCEDCENTRALIZED);
+		}
 		if(n<0)
 		{
 			cout << "Error multicasting chat message to all members"<< endl;
 		}
 		else
 		{
-		// maintain holdback queue for all broadcast msg
+			// maintain holdback queue for all broadcast msg
 		}
 	}
 	else
@@ -673,20 +764,19 @@ void sendSequenced()
 
 int sequencer(string key, int client_seq)
 {
-	if(generatedGlobalSeq==0 && globalSeq>0)
-	{
-		generatedGlobalSeq=globalSeq;
-	}
+
 	struct LastSeen lastseen;
 	outer_itr = hold_back_queue.find(key);
 	if(outer_itr == hold_back_queue.end())
 	{
 		// this is the first request from this IP
-		cout << "First req from this IP"<< key<<":"<< "seq:"<< client_seq<< endl;
+		//cout << "First req from this IP"<< key<<":"<< "seq:"<< client_seq<< endl;
 		lastseen = outer_itr->second;
 		lastseen.last_client_seq = client_seq;
 		//m_timers.insert(std::pair<std::string,timerInfo>(timerName, timerInfo(GetTime(),0)));
+		pthread_mutex_lock(&hold_back_queueMutex);
 		hold_back_queue.insert(pair<string, LastSeen>(key, lastseen));
+		pthread_mutex_unlock(&hold_back_queueMutex);
 		sendSequenced();
 	}
 
@@ -694,21 +784,25 @@ int sequencer(string key, int client_seq)
 	{	
 		if((outer_itr->second).client_msgs.empty() && (outer_itr->second).last_client_seq == client_seq-1) 
 		{//vector corresponding to this IP is empty but this is not the first request
-			cout <<"IP exists but vector empty:"<< key<< " Previous seen from this IP:" << (outer_itr->second).last_client_seq<< endl;
+			//cout <<"IP exists but vector empty:"<< key<< " Previous seen from this IP:" << (outer_itr->second).last_client_seq<< endl;
+			pthread_mutex_lock(&hold_back_queueMutex);
 			(outer_itr->second).last_client_seq = client_seq;
-			
+			pthread_mutex_unlock(&hold_back_queueMutex);
 			sendSequenced();
 		}
 
 		else			//out of order vector was not empty
 		{	//Out of local sequence number
-			cout << "Out of seq msg:" << client_seq<< endl;
+			//cout << "Out of seq msg:" << client_seq<< endl;
 			// add last_seq number too?
+			
+			pthread_mutex_lock(&hold_back_queueMutex);
+			
 			(outer_itr->second).client_msgs.insert(make_pair(client_seq,response));
 			//(outer_itr->second).client_seq_nos.push_back(client_seq);
 			hold_back_queue.insert(make_pair(key,(outer_itr->second)));
 			//sort((outer_itr->second).client_seq_nos.begin(), (outer_itr->second).client_seq_nos.end());
-			cout << "last seen seq for this ip:"<<(outer_itr->second).last_client_seq<< endl;
+			//cout << "last seen seq for this ip:"<<(outer_itr->second).last_client_seq<< endl;
 			int missingSeq =((outer_itr->second).last_client_seq)+1;	//missingSeq is the localSeq from that client that you should be receiving
 			inner_itr=((outer_itr->second).client_msgs).begin();
 			while((missingSeq < inner_itr->first) && (inner_itr!=((outer_itr->second).client_msgs).end()) )	//detected an out of order sequence request
@@ -729,12 +823,13 @@ int sequencer(string key, int client_seq)
 				{	
 					(outer_itr->second).last_client_seq = inner_itr->first;
 					
-					cout<<"Giving seq no to :" << (outer_itr->second).last_client_seq <<":"<<(inner_itr->second).c_str()<< endl;
+					//cout<<"Giving seq no to :" << (outer_itr->second).last_client_seq <<":"<<(inner_itr->second).c_str()<< endl;
 					strcpy(response, (inner_itr->second).c_str());
 					sendSequenced();
 					((outer_itr->second).client_msgs).erase(inner_itr);
 				}
 			}
+			pthread_mutex_unlock(&hold_back_queueMutex);
 		}
 	}
 	return 0;
