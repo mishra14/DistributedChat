@@ -64,7 +64,7 @@ void identify()
 				else
 				{
 					//participantListIterator->second->isReady=true;
-					cout<<participantListIterator->second->username<<" is Ready\n";
+					//cout<<participantListIterator->second->username<<" is Ready\n";
 				}
 				pthread_mutex_unlock(&participantListMutex);
 				updatingParticipantList=false;
@@ -150,7 +150,7 @@ void identify()
 					participantListIterator=participantList.find(createKey(clientAddress));
 					participantListIterator->second->seqNumber=atoi(responseLocalSeq);
 					pthread_mutex_unlock(&participantListMutex);
-					cout<<participantListIterator->second->username<<":"<<atoi(responseGlobalSeq)<<":"<<responseMsg;
+					cout<<participantListIterator->second->username<<":"<<responseMsg;
 					if(self!=NULL)
 					{
 						if(participantListIterator->second==self)
@@ -195,7 +195,7 @@ void identify()
 								pthread_mutex_lock(&participantListMutex);
 								participantListIterator->second->seqNumber=atoi(responseLocalSeq);
 								pthread_mutex_unlock(&participantListMutex);
-								cout<<participantListIterator->second->username<<":"<<atoi(responseGlobalSeq)<<":"<<atoi(responseLocalSeq)<<":"<<responseMsg;
+								cout<<participantListIterator->second->username<<":"<<responseMsg;
 								if(self!=NULL)
 								{
 									if(participantListIterator->second==self)
@@ -224,7 +224,7 @@ void identify()
 						{
 							//cout<<"globalSeq : "<<globalSeq<<" notificationGlobalSeq : "<<notificationGlobalSeq<<endl;
 							//a sequence number is missing; send a request to all for retransmission;
-							cout<<"Sending sequence lost request for global seq : "<<(globalSeq+1)<<endl;
+							//cout<<"Sending sequence lost request for global seq : "<<(globalSeq+1)<<endl;
 							globalSeqLost.insert(make_pair(globalSeq+1,0));
 							snprintf(msg,1000,"S3_:%d:%d:_",(globalSeq+1),0);
 							if(multicast(SEQUENCELOST)<0)
@@ -853,7 +853,7 @@ void *electionThread(void *data)
 				if(!electionBowOut && !isLeaderAlive)		//none of the higher processes are alive; Hence make self as the leader and broadcast the same
 				{
 					//threadSleep(1,0);
-					cout<<"Self as leader; No higher process responding\n";
+					//cout<<"Self as leader; No higher process responding\n";
 					pthread_mutex_lock(&isLeaderAliveMutex);
 					isLeaderAlive=true;
 					pthread_mutex_unlock(&isLeaderAliveMutex);
@@ -1235,6 +1235,7 @@ int main(int argc, char **argv)
 			//cout<<"Error in join client bind\nRetrying...\n";
 			selfAddress.sin_port=htons(++defaultPORT);
 		}
+		printf("%s joined a new chat on %s, listening on %s:%d\n",argv[1],argv[2],ipString,defaultPORT);
 		snprintf(msg,1000,"N0_:0:%d:%s",++localSeq,argv[1]);
 		if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&joinClientAddress,sizeof(joinClientAddress))<0)
 		{
@@ -1273,8 +1274,7 @@ int main(int argc, char **argv)
 			cout<<"Join request Error.... Exiting :(\n";
 			exit(1);
 		}
-		
-		printf("%s joined a new chat on %s, listening on %s:%d\nSuccedded, current users : \nParticipant List - \n",argv[1],argv[2],ipString,defaultPORT);
+		printf("Succedded, current users : \nParticipant List - \n");
 		printParticipantList();
 		//printParticipant(leader);
 	}

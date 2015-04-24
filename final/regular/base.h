@@ -595,7 +595,7 @@ void receiveParticipantList()
 				participantAddress.sin_port=htons(atoi(port));
 				string clientKey(createKey(participantAddress));
 				struct participant *participant=createParticipant(participantAddress,atoi(seq), username);
-					//check if this participant is known or not
+				//check if this participant is known or not
 				if(participantList.find(clientKey)==participantList.end())			//not there; add him/her to the list
 				{
 					participantList.insert(make_pair(clientKey,participant));
@@ -896,7 +896,7 @@ int sequencer(string key, int client_seq)
 	if(outer_itr == hold_back_queue.end())
 	{
 		// this is the first request from this IP
-		cout << "First req from this IP"<< key<<":"<< "seq:"<< client_seq<< endl;
+		//cout << "First req from this IP"<< key<<":"<< "seq:"<< client_seq<< endl;
 		lastseen = outer_itr->second;
 		lastseen.last_client_seq = client_seq;
 		//m_timers.insert(std::pair<std::string,timerInfo>(timerName, timerInfo(GetTime(),0)));
