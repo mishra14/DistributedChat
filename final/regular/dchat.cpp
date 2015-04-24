@@ -576,7 +576,7 @@ void identify()
 					}
 					if(!searchResult)
 					{
-						cout<<"Searching for : "<<responseGlobalSeq<<"\nNot found; Responding\n";
+						//cout<<"Searching for : "<<responseGlobalSeq<<"\nNot found; Responding\n";
 						snprintf(msg,1000,"S3N:%d:%d:_",atoi(responseGlobalSeq),atoi(responseLocalSeq));
 						if(sendto(chatSocketFD,msg,strlen(msg),0,(struct sockaddr *)&clientAddress,sizeof(clientAddress))<0)
 						{

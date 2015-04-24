@@ -600,15 +600,16 @@ void receiveParticipantList()
 				{
 					participantList.insert(make_pair(clientKey,participant));
 					cout<<"NOTICE : "<<participant->username<<" joined the chat on "<<clientKey<<"....\n";
+					if(fifth!=NULL)
+					{
+						leader=participant;
+					}	
 				}
 				else																//if there; remove from the new list (to track deletions)
 				{
 					participantListNew.erase(clientKey);
 				}
-				if(fifth!=NULL)
-				{
-					leader=participant;
-				}	
+
 			}
 			else
 			{
@@ -636,8 +637,10 @@ void receiveParticipantList()
 		{
 			self=participantListIterator->second;
 		}
-		//cout<<"Self - \n";
-		//printParticipant(self);
+		/* cout<<"Self - \n";
+		printParticipant(self);
+		cout<<"leader - \n";
+		printParticipant(leader); */
 		isLeader=(self==leader)?true:false;
 		//printParticipantList();
 		pthread_mutex_unlock(&participantListMutex);
@@ -825,7 +828,7 @@ int initializeSequencer()
 	return result;
 }
 
-
+ 
 void sendSequenced()
 {
 	if(breakDownMsg()==0)
